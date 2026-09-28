@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { z } from 'zod';
-import '../config.ts';
+import { config } from '../config.ts';
 import { addDays, weekdayOf, WEEKDAY_NAMES as WEEKDAY, type IsoDate } from '../shared/dates.ts';
 import type { DropSlot } from '../shared/types.ts';
 import { redactUtterance, type Classification, type ClassifyRequest, type Classifier } from './classifier.ts';
@@ -146,7 +146,7 @@ export class HaikuClassifier implements Classifier {
   calls = 0;
 
   constructor(private readonly opts: HaikuOptions = {}) {
-    this.client = opts.client ?? new Anthropic();
+    this.client = opts.client ?? new Anthropic({ apiKey: config.anthropicApiKey });
   }
 
   async classify(req: ClassifyRequest): Promise<Classification> {

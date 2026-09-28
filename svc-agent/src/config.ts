@@ -36,7 +36,9 @@ export const config = {
   /** The call endpoints and the Vapi webhook. */
   callApiSecret: str('CALL_API_SECRET'),
 
-  anthropicApiKey: str('ANTHROPIC_API_KEY'),
+  /** CLAUDE_API_KEY is the name now; the old ANTHROPIC_API_KEY is still read
+   *  so an existing .env or Fly secret keeps working until it is renamed. */
+  anthropicApiKey: str('CLAUDE_API_KEY') || str('ANTHROPIC_API_KEY'),
 
   /**
    * An unknown number gets a demo customer and one car instead of
@@ -77,6 +79,6 @@ export function configWarnings(): string[] {
   const out: string[] = [];
   if (!config.adminPassword) out.push('ADMIN_PASSWORD unset — portal writes will be refused');
   if (!config.callApiSecret) out.push('CALL_API_SECRET unset — call endpoints will be refused');
-  if (!config.anthropicApiKey) out.push('ANTHROPIC_API_KEY unset — falling back to the stub classifier');
+  if (!config.anthropicApiKey) out.push('CLAUDE_API_KEY unset — falling back to the stub classifier');
   return out;
 }
