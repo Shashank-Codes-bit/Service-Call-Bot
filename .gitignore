@@ -1,0 +1,5 @@
+# svc-agent/.gitignore covers .env, the database, node_modules and dist.
+# Local Claude permissions are per-machine.
+.claude/settings.local.json
+Thumbs.db
+desktop.ini

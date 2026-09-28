@@ -1,0 +1,41 @@
+# One process: the portal, its chat panel, and the call endpoints a voice
+# layer will use later. Secrets (ANTHROPIC_API_KEY, ADMIN_PASSWORD,
+# CALL_API_SECRET) are set with `fly secrets`, never here.
+
+app = "svc-agent-voltas"
+# Singapore, the nearest region to India (Fly has none there). Chat visitors
+# reach the server directly, so pages and fast-path turns stay ~70ms away
+# rather than ~230ms in the US; model turns pay one long hop either way.
+# Revisit when voice arrives if the voice provider only runs in the US — a
+# config change, not a code change.
+primary_region = "sin"
+
+[env]
+  PORT = "8080"
+  DB_PATH = "/data/service.db"
+  DEMO_MODE = "true"
+  BEHIND_PROXY = "true"
+
+# One volume, one machine: SQLite has exactly one writer.
+[[mounts]]
+  source = "svc_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # The database is on this machine's volume, so it must never stop or move.
+  auto_stop_machines = "off"
+  auto_start_machines = false
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "20s"
+    interval = "30s"
+    method = "GET"
+    path = "/health"
+    timeout = "5s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

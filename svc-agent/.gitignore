@@ -1,0 +1,11 @@
+node_modules/
+service.db
+service.db-journal
+service.db-wal
+service.db-shm
+dist/
+
+# Never commit credentials. .env.example shows the shape instead.
+.env
+.env.*
+!.env.example

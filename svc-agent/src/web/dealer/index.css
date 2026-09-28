@@ -1,0 +1,13 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, monospace;
+}
+
+html { color-scheme: light; }
+body { margin: 0; }
+
+/* Tabular figures everywhere numbers are compared down a column — capacity
+   cells, references, counts. Proportional digits make a grid unreadable. */
+.nums { font-variant-numeric: tabular-nums; }

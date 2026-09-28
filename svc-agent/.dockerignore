@@ -1,0 +1,21 @@
+# Not a git repo, so this is the only filter on what reaches the build.
+
+# The API key lives here, and config.ts would load /app/.env if it were
+# present. Its absence is what makes the Fly secret the only source.
+.env
+.env.*
+
+# Host builds: node_modules holds the Windows better-sqlite3 and esbuild
+# binaries, which would shadow the Linux ones. Both stages install their own.
+node_modules
+dist
+
+# The laptop's database. Production data lives on the Fly volume.
+service.db
+service.db-*
+
+tests
+vitest.config.ts
+vitest.live.config.ts
+Dockerfile
+fly.toml
