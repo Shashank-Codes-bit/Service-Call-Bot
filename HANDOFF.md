@@ -465,14 +465,23 @@ question.
    grep -E '^(ANTHROPIC_API_KEY|ADMIN_PASSWORD|CALL_API_SECRET)=' .env | fly secrets import --app svc-agent-voltas
    ```
 
-   Unverified until the first remote build: that `npm ci` on Linux finds the
-   Linux native binaries (esbuild, rollup, tailwind oxide, lightningcss) from a
-   lockfile generated on Windows.
+   **Checked 2026-09-28 in a cloud session**, by running both Dockerfile stages'
+   commands in `node:22.17.0-slim`: the Windows-generated lockfile installs
+   the Linux native binaries. The image as first written would **not** have
+   built: `better-sqlite3` has a `binding.gyp`, so npm runs an implicit
+   `node-gyp rebuild`, which needs Python, which the slim image lacks.
+   Both `npm ci` lines now pass `--ignore-scripts`: better-sqlite3 loads its
+   bundled `prebuilds/linux-x64.node`, and esbuild finds its binary through
+   its optional dependency. After that, the portal built, the server booted
+   and seeded, and a stranger booked end to end in `DEMO_MODE`. Still
+   unverified: the `apt-get install tzdata` step, which the cloud sandbox's
+   network blocks.
 
 2. **Verify the deploy**, in order: `fly status` (one machine, health passing)
    · `fly logs` (`seeded fresh`, `Haiku (live)`, `clock Asia/Kolkata`, no
-   warnings) · `fly ssh console -C "node -p \"new Date().toString()\""` shows
-   `GMT+0530` · no `.env` in `/app`, the db in `/data` · unauthenticated
+   warnings; the `clock` line is the timezone check — a separate
+   `fly ssh console -C "node -p …"` shows UTC, because `config.ts` pins `TZ`
+   inside the server process only) · no `.env` in `/app`, the db in `/data` · unauthenticated
    `PUT /api/capacity/master` → 401 · **persistence:** make a booking,
    `fly machine restart`, log must say `existing data kept` and the booking
    survives · a full chat on the public URL.
@@ -482,7 +491,13 @@ question.
 5. **Before real customer data:** the portal and chat are open by design;
    they need a login. The chat's "call as" number is self-asserted, so with
    real data every chat must go through OTP to a real SMS provider, and
-   `DEMO_MODE` must be off.
+   `DEMO_MODE` must be off. **The OTP itself is only partly built** (found
+   2026-09-28): `awaiting_otp` in `machine.ts` checks the digits and ends the
+   call after 3 wrong codes. None of CONTEXT E1's timing rules exist — no
+   5-minute validity, no reminder at 15 s, no resend at 45 s (max 3, a resend
+   kills the old code), and no 3-calls-per-hour block after a failed OTP. The
+   expiry and the hourly block are security controls; build them before real
+   data. Not yet decided by the user.
 6. **Voice (later):** Vapi account and number; custom LLM URL
    `https://<app>.fly.dev/vapi` (Vapi appends `/chat/completions`), header
    `Authorization: Bearer <CALL_API_SECRET>`, no first message of its own. If
