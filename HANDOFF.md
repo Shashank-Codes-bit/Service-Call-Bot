@@ -350,6 +350,15 @@ waiting_area`.
 16. **Chat-first. Voice later, with minimum changes.**
 17. **"Everything done except the Vapi number."**
 18. Region: Singapore — Fly has no Indian region; `sin` is ~70 ms from India vs ~230 ms for `iad`.
+19. **(2026-09-28) Order of work:** correct and verify what exists before
+    building more; nothing that is not built yet is to be added now. Held back:
+    - the live classifier suite — run later;
+    - the CONTEXT items not built (E1 OTP timing, F1/F5 SMS resend, J1 CRM
+      failure handling) — not now;
+    - warming the schemas at boot — future scope;
+    - the Fly deploy — after everything is finalised;
+    - login, real SMS, OTP, `DEMO_MODE` off — when there is real data;
+    - voice — once the app is live.
 
 ---
 
@@ -487,7 +496,7 @@ question.
    survives · a full chat on the public URL.
 
 3. **Optional:** warm the structured-output schemas at boot (section 6).
-4. **Update `CONTEXT.md`** PART I and J — stale since 2026-09-06.
+4. ~~Update `CONTEXT.md` PART I and J~~ — done 2026-09-28.
 5. **Before real customer data:** the portal and chat are open by design;
    they need a login. The chat's "call as" number is self-asserted, so with
    real data every chat must go through OTP to a real SMS provider, and
