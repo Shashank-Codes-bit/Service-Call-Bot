@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -30,7 +30,7 @@ const TODAY = today(NOW);
  * every mutating call here carries the password. The guard itself is tested in
  * http.test.ts; these tests are about what the endpoints do once past it.
  */
-const ADMIN = config.adminPassword;
+const ADMIN = config.adminPassword || 'test-admin';
 
 let scratch: string;
 let db: Database;
@@ -52,6 +52,10 @@ const freeSlot = (date: string, pool: string, dropSlot: string) =>
   ).free;
 
 beforeEach(() => {
+  // The guard reads config at request time, so a checkout with no .env still
+  // gets past it.
+  vi.spyOn(config, 'adminPassword', 'get' as never).mockReturnValue(ADMIN as never);
+
   scratch = mkdtempSync(join(tmpdir(), 'svc-api-'));
   seed({ now: NOW, dbPath: join(scratch, 'test.db') });
   db = open(join(scratch, 'test.db'));
@@ -61,6 +65,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   db.close();
   rmSync(scratch, { recursive: true, force: true });
 });
