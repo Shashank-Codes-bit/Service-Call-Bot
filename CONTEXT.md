@@ -13,9 +13,9 @@
 >    call app consumes, and it is the demo's persuasive moment.
 > 3. **B3 is amended** — see below. It is no longer an absolute.
 >
-> **Step 1 is built and verified in this repo** (`svc-agent/`) — schema, seed,
-> date arithmetic, booking references, 36 passing tests. See PART I, which has
-> been rewritten; the old PART I described code that no longer exists.
+> **Updated 2026-09-28:** PART I and PART J now describe the code as it stands —
+> the whole chat app is built (298 offline tests). `HANDOFF.md` carries the
+> build history, every file's role, and the user's later decisions.
 >
 > Sections carrying decisions from that session are marked **[Sep-06]**.
 
@@ -731,30 +731,37 @@ routing exits need pruning.
 
 ---
 
-# PART I — What has been built  **[Sep-06 — rewritten]**
+# PART I — What has been built  **[updated 2026-09-28]**
 
-> The old PART I described a schema and seed built in an earlier session. **That
-> code is not in this repo and is gone.** Rather than migrate onto it, Step 1 was
-> written once already carrying the C1 changes — so none of the eight defects the
-> old I4 listed were ever built. That list is preserved in I5 as a regression
-> checklist, not as outstanding work.
+> PART K steps 1–8 are built: the dealer portal, the business rules, the state
+> machine, the phrasing pools, the Haiku classifier, SMS log + reports, and the
+> chat panel. Voice (step 9) has its adapter built but no number. The earlier
+> build's code is gone; its eight defects were never carried over and are kept
+> in I5 as a regression checklist. Per-file roles and the build history are in
+> `HANDOFF.md` §4 and §8.
 
 ## I1. Stack
 
-**TypeScript** on **Node + Express**, **SQLite via better-sqlite3**, **React +
-Vite + Tailwind** for both screens, **Vitest** for tests. Claude **Haiku 4.5**
-(`claude-haiku-4-5`) for classification only.
+**TypeScript** on **Node 22 + Express 5**, run directly by `tsx` (no compile
+step), **SQLite via better-sqlite3 13**, **React 19 + Vite 8 + Tailwind 4** for
+the dealer portal and its chat panel, **Vitest 5** for tests, **Zod 4** for the
+classifier schemas. Claude **Haiku 4.5** (`claude-haiku-4-5`) for
+classification only, with a regex **fast path** in front of it: a bare yes/no,
+a slot or a run of digits is answered in a few milliseconds with no model call
+(G7). Without an API key the whole flow runs on that stub.
 
 TypeScript rather than the JS of the earlier build: the Zod schema that
 constrains the API response **is** the TypeScript type, so the classifier
-contract cannot drift from what the code expects, and the state machine's
-`switch` gets exhaustiveness checking — which catches the "added a state, forgot
-to handle it" failure G6 warns is expensive to retrofit.
+contract cannot drift from what the code expects. (The state machine's `switch`
+has a `default` branch, so a new state is not a compile error — the tests are
+what catch an unhandled one.)
 
 better-sqlite3 being synchronous is a real advantage here: the conditional
 capacity `UPDATE` and the booking-counter increment sit inside one
 `db.transaction()` with no async interleaving to reason about. A single file also
-suits the on-premise pitch (H4). SQL kept plain and Postgres-portable.
+suits the on-premise pitch (H4). SQL is kept plain; the one SQLite-specific
+feature is `json_extract` on `sessions.data` and `leads.crm_snapshot`
+(Postgres would use `->>`).
 
 ### The voice vendor is transport only  **[Sep-19 — decided]**
 
@@ -794,13 +801,15 @@ machine that discards anything failing the schema.
 
 `client.messages.parse()` with `zodOutputFormat(schema)` and
 `output_config.format`, so the response shape is guaranteed rather than hoped
-for. `max_tokens: 256`, no thinking parameter, prompt caching on the stable
-system prefix.
+for. `max_tokens: 256`, no thinking parameter. The system prefix is marked for
+prompt caching, but measured it does not cache — it is under the minimum
+cacheable size — so it saves nothing today.
 
 **One LLM call per turn, maximum** (G7). The schema at each state is the union of
 what that state asks for **plus** the always-on overlay — cost question, general
-question, correction, escalation — which can arrive at any turn (D9, D10). Never
-a separate call per question type; that blows the latency budget.
+question (with the knowledge-bank key as a closed set of the dealer's own
+rows), escalation — which can arrive at any turn (D9, D10). Never a separate
+call per question type; that blows the latency budget.
 
 **Date expressions go through the LLM; bookability does not.** The LLM turns
 "Thursday" or "day after tomorrow" into an ISO date, and our code decides whether
@@ -814,15 +823,21 @@ function moves to `claude-sonnet-5` without touching anything else.
 
 ```
 svc-agent/
-├── package.json · tsconfig.json · service.db
 ├── src/
-│   ├── db/        schema.sql · seed.ts · index.ts
-│   ├── shared/    dates.ts · booking-reference.ts
-│   ├── dealer/    (Step 2)
-│   ├── call/      (Step 4)
-│   └── web/       (Steps 2 and 8)
-└── tests/         schema.test.ts · dates.test.ts
+│   ├── config.ts · auth.ts   environment (the only reader); guards + rate limit
+│   ├── db/        schema, seed, open, first-boot seeding
+│   ├── shared/    the business rules — dates, availability, capacity,
+│   │              bookings (the one write path), service-due, leads
+│   ├── call/      state machine, templates, classifiers, CRM seam,
+│   │              sessions, SMS log, HTTP call API, Vapi adapter
+│   ├── kb/        the dealer's knowledge bank
+│   ├── dealer/    server boot, portal API, reports
+│   └── web/dealer/  the portal: Capacity, Arrivals, Calls, Reports, Chat
+├── tests/         13 files (12 offline, 1 live)
+└── Dockerfile · fly.toml   deploy-ready, not deployed
 ```
+
+Each file's role: `HANDOFF.md` §4.
 
 `npm run db:rebuild` rebuilds from scratch. It is **destructive whether or not
 you mean it to be** — `schema.sql` drops every table before recreating it. Only
@@ -855,10 +870,37 @@ pool full — the day is gone) and **+4** (minor morning full, afternoon open �
 "only the afternoon is free" case in D6). Three centres seeded; **only centre 1
 is used, and only centre 1 is bent** — 2 and 3 stay wide open.
 
+In `DEMO_MODE`, a number not in the table gets a customer "Guest" with a paid
+minor-service Swift (registration `DEMO<mobile>`), so a stranger can reach a
+booking; with it off, the same number ends in `number_not_found`.
+
 ## I4. Verification — what was actually checked
 
 Verified by querying `service.db` and running the suite, not by reading comments
-(PART L). **36 tests pass.**
+(PART L). **298 offline tests pass** (12 files, no key needed), plus **19 live
+tests** against the real Haiku model, last run on the laptop:
+
+| file | tests | covers |
+|---|---|---|
+| machine | 53 | whole calls end to end with the stub |
+| api | 40 | portal routes, capacity save/apply, dealer bookings, closing a booking |
+| schema | 32 | constraints, bends, references, lead reasons, first-boot seeding |
+| rules | 29 | D2/D3 matrix, D8, D11, D12, lead builder |
+| bookings | 28 | the write path, races, EDD matrix |
+| kb | 28 | answers from data, never guessing, editing |
+| http | 21 | guards, rate limits, call API, Vapi adapter |
+| availability | 17 | D5/D6 |
+| classifier | 17 | stub, redaction on the wire, mapping |
+| capacity | 12 | regeneration rules |
+| reports | 12 | F3 ownership |
+| dates | 9 | local-time arithmetic, India dates on a UTC host |
+
+Also checked outside the suite: a full booking in a real browser through the
+chat panel (2026-09-25), and on 2026-09-28 a fresh Linux checkout — install,
+tests, portal build, boot, a chat booking confirmed in the database, and both
+Dockerfile stages run in the production base image.
+
+The original Step-1 checks still hold, and are still asserted:
 
 - **Overbooking is impossible.** The conditional `UPDATE` takes the last slot
   once and refuses the second; the `CHECK` also rejects a direct overflow and a
@@ -918,10 +960,12 @@ by querying the database.
 
 1. **CRM failure handling.** If the lookup errors or times out: recoverable
    errors are surfaced to the caller; anything unknown drops out with a
-   `missing_required_field` lead. The exact split is not yet written.
+   `missing_required_field` lead. The exact split is not yet written. Today
+   the lookup is a local query, and an error there fails the chat turn with a
+   500 (the Vapi adapter says "Sorry, I lost that") and writes no lead.
 2. **Whether "end the call on a knowledge-bank miss" survives contact with real
    traffic.** See the recorded consequence in D10.
-3. **Which telephony vendor** for phase 8. The *mode* is settled (transport
+3. **Which telephony vendor** for the voice phase (K9). The *mode* is settled (transport
    only, custom-LLM webhook — see I1), so this is now a shortlist question, not
    an architecture one. **Custom-LLM / webhook support is a hard requirement**;
    a vendor that only offers its own LLM is disqualified whatever else it does.
