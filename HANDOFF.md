@@ -494,22 +494,26 @@ question.
 
 ---
 
-## 11. Moving to a cloud session
+## 11. The repository and the cloud session
 
-The desktop app's **Continue in cloud** pushes the current git branch to
-GitHub and starts a cloud session on it. **This folder is not a git repository
-and has no remote**, so that cannot run yet. To move:
+**Done 2026-09-28.** The project root is a git repository, pushed to
+<https://github.com/Shashank-Codes-bit/Service-Call-Bot> — **public**, by the
+user's choice, made knowing that `CONTEXT.md` becomes readable by anyone.
+Branch `main`, first commit `c8db4cc`, 66 files. Verified on GitHub: `.env`,
+`service.db*`, `.claude/settings.local.json`, `node_modules` and `dist` are not
+in it (root `.gitignore` + `svc-agent/.gitignore`). Commits use a repo-local
+identity with a GitHub no-reply address, so no real email is public.
 
-1. Make the **project root** the repository, so `CONTEXT.md`, `HANDOFF.md` and
-   `svc-agent/` travel together.
-2. Keep out: `svc-agent/.env`, `svc-agent/service.db*`, `node_modules`, `dist`
-   (already in `svc-agent/.gitignore`), and `.claude/settings.local.json`.
-   Check `git status` before the first commit.
-3. Create a **private** GitHub repository and push.
-4. Start the cloud session on it (or use **Continue in cloud** once pushed).
-5. In the cloud environment: `npm install` and `npm test` need no secrets.
-   `npm run test:live` and a live classifier need `ANTHROPIC_API_KEY` set in the
+Because the repository is public: **never commit a secret**, and keep anything
+about the API key out of committed files.
+
+In a cloud session:
+
+1. `cd svc-agent && npm install && npm test` — needs no secrets; 298 should pass.
+2. `npm run test:live` and a live classifier need `ANTHROPIC_API_KEY` set in the
    cloud environment's settings — the user adds it; do not commit it.
-6. Things that do **not** travel: the local `service.db` (the cloud copy seeds
-   itself), the laptop's Fly login, this laptop's Claude memory (its content is
-   in section 0), and earlier chat transcripts (this file replaces them).
+3. `npm run dev` starts the server; with no `service.db` it seeds itself.
+4. Things that did **not** travel: the local `service.db`, the laptop's Fly
+   login (`fly auth login` or a user-provided `FLY_API_TOKEN` is needed to
+   deploy), the laptop's Claude memory (its content is in section 0), and
+   earlier chat transcripts (this file replaces them).
