@@ -323,7 +323,7 @@ built: at boot, one cheap classify per state to warm them (~$0.01).
 Centre 1 "Voltas Motors Service — Sector 44", 09:00–19:00, seven days. Only
 centre 1 is used. Capacity bends on centre 1: +2 days minor full, +3 days
 everything full, +4 days only the minor afternoon free. KB keys:
-`loaner_car, location, opening_hours, parking, payment_methods, pickup_drop,
+`location, opening_hours, parking, payment_methods, pickup_drop,
 waiting_area`.
 
 ---
