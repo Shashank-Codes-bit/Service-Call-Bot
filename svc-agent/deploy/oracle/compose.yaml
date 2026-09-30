@@ -1,0 +1,43 @@
+# The app on an Oracle Cloud Always Free VM, behind Caddy, which gets and
+# renews the HTTPS certificate. Secrets live in .env beside this file — on the
+# server only, never committed (svc-agent/.gitignore covers it).
+#
+#   docker compose up -d --build       start, or rebuild after a git pull
+#   docker compose logs -f app         the boot log and every request error
+name: svc-agent
+
+services:
+  app:
+    build:
+      context: ../..
+    restart: unless-stopped
+    env_file: .env
+    # The same values fly.toml sets. These win over anything in .env.
+    environment:
+      PORT: "8080"
+      DB_PATH: /data/service.db
+      DEMO_MODE: "true"
+      BEHIND_PROXY: "true"
+    # The database. A named volume outlives the container, so a rebuild keeps
+    # every booking.
+    volumes:
+      - svc_data:/data
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on: [app]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?set SITE_ADDRESS in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  svc_data:
+  caddy_data:
+  caddy_config:
