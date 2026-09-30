@@ -486,6 +486,41 @@ question.
    unverified: the `apt-get install tzdata` step, which the cloud sandbox's
    network blocks.
 
+   **Option B — Oracle Cloud Always Free (chosen 2026-09-30, $0).** Fly has
+   no free tier any more (a 2-hour / 7-day trial only). The user's tenancy's
+   home region is India West (Mumbai); the VM is Ubuntu 24.04 on
+   `VM.Standard.A1.Flex` (Arm), 1 OCPU / 6 GB. The lockfile carries the Arm64
+   Linux binaries for every native package, so the same Dockerfile builds
+   there. Files in `svc-agent/deploy/oracle/`: `compose.yaml` (app + Caddy),
+   `Caddyfile` (HTTPS via Let's Encrypt), `setup.sh` (firewall + Docker).
+   The user, on the VM:
+
+   ```bash
+   git clone https://github.com/Shashank-Codes-bit/Service-Call-Bot
+   bash Service-Call-Bot/svc-agent/deploy/oracle/setup.sh
+   # log out and back in, then:
+   cd Service-Call-Bot/svc-agent/deploy/oracle
+   nano .env   # CLAUDE_API_KEY, ADMIN_PASSWORD, CALL_API_SECRET, SITE_ADDRESS=<ip-with-dashes>.sslip.io
+   docker compose up -d --build
+   ```
+
+   **Checked 2026-09-30 in a cloud session** (x86, so not the Arm build
+   itself): the image built, including the `apt-get install tzdata` step
+   (apt pointed at HTTPS for the sandbox's proxy, in a test copy only).
+   `compose.yaml` came up with `SITE_ADDRESS=localhost`. Through Caddy over
+   HTTPS: `/health` returned 200, plain HTTP redirected to HTTPS, and an
+   unauthenticated capacity PUT returned 401. A chat booked end to end.
+   After `--force-recreate` the log said `existing data kept` and the booking
+   was still there. `/call/start` with the secret returned 200, and there
+   was no `.env` in `/app`.
+
+   Update: `git pull && docker compose up -d --build`. Logs:
+   `docker compose logs -f app`. The subnet's security list must allow TCP
+   80 and 443 from `0.0.0.0/0`; `setup.sh` opens the VM's own iptables.
+   **Oracle stops Always Free VMs idle for 7 days** (CPU p95, network and
+   memory all under 20%); the disk is kept. Upgrading the tenancy to Pay As
+   You Go keeps Always Free resources free and ends that — the user's call.
+
 2. **Verify the deploy**, in order: `fly status` (one machine, health passing)
    · `fly logs` (`seeded fresh`, `Haiku (live)`, `clock Asia/Kolkata`, no
    warnings; the `clock` line is the timezone check — a separate

@@ -19,3 +19,7 @@ vitest.config.ts
 vitest.live.config.ts
 Dockerfile
 fly.toml
+
+# The Oracle deploy keeps its server-side .env here. The `.env` line above
+# matches only at the root, so the whole folder stays out of the build.
+deploy
