@@ -1,5 +1,5 @@
 # One process: the portal, its chat panel, and the call endpoints a voice
-# layer will use later. Secrets (ANTHROPIC_API_KEY, ADMIN_PASSWORD,
+# layer will use later. Secrets (CLAUDE_API_KEY, ADMIN_PASSWORD,
 # CALL_API_SECRET) are set with `fly secrets`, never here.
 
 app = "svc-agent-voltas"

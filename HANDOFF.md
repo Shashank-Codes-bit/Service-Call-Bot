@@ -31,7 +31,7 @@
 
 **Secrets:**
 
-- `svc-agent/.env` holds `ANTHROPIC_API_KEY`, `ADMIN_PASSWORD`,
+- `svc-agent/.env` holds `CLAUDE_API_KEY`, `ADMIN_PASSWORD`,
   `CALL_API_SECRET`, `DEMO_MODE`. It is gitignored. **Never commit it, never
   print its values.** Key rotation has been discussed and decided by the user;
   do not raise it again.
@@ -102,7 +102,7 @@ TypeScript is v7 (`tsc --noEmit` only; `noUnusedLocals` and
 | `npm run build:web` | build the portal into `dist/dealer` |
 | `npm run dev:web` | Vite dev server on 5173, proxies `/api` to 3001 |
 | `npm test` | 298 offline tests, ~6 s, no network, no key needed |
-| `npm run test:live` | 19 tests against the real Haiku model; needs `ANTHROPIC_API_KEY`; costs a few cents |
+| `npm run test:live` | 19 tests against the real Haiku model; needs `CLAUDE_API_KEY`; costs a few cents |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run db:rebuild` | **destructive** — drops and reseeds `service.db`. **Stop the server first**; running it against a live server once left the schema half-dropped |
 
@@ -257,7 +257,7 @@ secret refuses (503), it never opens** — fail closed.
 |---|---|---|---|
 | `PORT` | 3001 | — | `8080` (fly.toml) |
 | `DB_PATH` | `svc-agent/service.db` | — | `/data/service.db` (volume) |
-| `ANTHROPIC_API_KEY` | none → stub classifier | set | **secret** (user sets) |
+| `CLAUDE_API_KEY` | none → stub classifier | set | **secret** (user sets) |
 | `ADMIN_PASSWORD` | none → writes refused | set (weak demo value) | **secret** (user sets) |
 | `CALL_API_SECRET` | none → `/call`, `/vapi` refused | set | **secret** (user sets) |
 | `DEMO_MODE` | `false` | `true` | `true` (fly.toml) |
@@ -471,7 +471,7 @@ question.
    Then **the user** sets the secrets (after strengthening `ADMIN_PASSWORD`):
 
    ```bash
-   grep -E '^(ANTHROPIC_API_KEY|ADMIN_PASSWORD|CALL_API_SECRET)=' .env | fly secrets import --app svc-agent-voltas
+   grep -E '^(CLAUDE_API_KEY|ADMIN_PASSWORD|CALL_API_SECRET)=' .env | fly secrets import --app svc-agent-voltas
    ```
 
    **Checked 2026-09-28 in a cloud session**, by running both Dockerfile stages'
@@ -534,7 +534,7 @@ about the API key out of committed files.
 In a cloud session:
 
 1. `cd svc-agent && npm install && npm test` — needs no secrets; 298 should pass.
-2. `npm run test:live` and a live classifier need `ANTHROPIC_API_KEY` set in the
+2. `npm run test:live` and a live classifier need `CLAUDE_API_KEY` set in the
    cloud environment's settings — the user adds it; do not commit it.
 3. `npm run dev` starts the server; with no `service.db` it seeds itself.
 4. Things that did **not** travel: the local `service.db`, the laptop's Fly
