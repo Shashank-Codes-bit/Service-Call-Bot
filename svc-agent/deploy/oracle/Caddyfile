@@ -1,7 +1,0 @@
-# SITE_ADDRESS is a hostname that resolves to this VM — with no domain,
-# <ip-with-dashes>.sslip.io. Caddy fetches the certificate for it on first
-# start. The app sees one proxy hop, which is what BEHIND_PROXY trusts.
-{$SITE_ADDRESS} {
-	encode gzip
-	reverse_proxy app:8080
-}
