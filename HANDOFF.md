@@ -491,18 +491,46 @@ question.
    home region is India West (Mumbai); the VM is Ubuntu 24.04 on
    `VM.Standard.A1.Flex` (Arm), 1 OCPU / 6 GB. The lockfile carries the Arm64
    Linux binaries for every native package, so the same Dockerfile builds
-   there. Files in `svc-agent/deploy/oracle/`: `compose.yaml` (app + Caddy),
-   `Caddyfile` (HTTPS via Let's Encrypt), `setup.sh` (firewall + Docker).
-   The user, on the VM:
+   there.
+
+   **Live since 2026-10-01** at `https://140-238-251-141.sslip.io` (VM
+   `svc-agent`, public IP `140.238.251.141`, VCN `svc-agent-vcn`). Boot log
+   on the VM: `seeded fresh`, `Haiku (live)`, `clock Asia/Kolkata`, no
+   warnings. SSH only works with the user's **Voltas VPN disconnected**.
+
+   **The VM hosts several sites (2026-10-01).** The VM-level setup lives in
+   `infra/oracle-vm/`, and its README is the guide and port register:
+   - `setup.sh`: firewall, Docker, and Caddy on the machine itself, with an
+     import-only Caddyfile;
+   - `add-site.sh`: one file per site in `/etc/caddy/sites/`, validated
+     before the reload.
+
+   The bot's `svc-agent/deploy/oracle/compose.yaml` is now the app only,
+   published on `127.0.0.1:8080`. Its `.env` holds `CLAUDE_API_KEY`,
+   `ADMIN_PASSWORD` and `CALL_API_SECRET`; `SITE_ADDRESS` is no longer read.
+   Site #2 is the Voltas alert dashboard (`Email_Alert-Dashboard`, systemd on
+   `127.0.0.1:8000`) at `alerts.140-238-251-141.sslip.io`.
+
+   One-time move of the live VM from the first layout (Caddy inside the
+   bot's compose) to the shared one, about 2–3 minutes of downtime:
 
    ```bash
-   git clone https://github.com/Shashank-Codes-bit/Service-Call-Bot
-   bash Service-Call-Bot/svc-agent/deploy/oracle/setup.sh
-   # log out and back in, then:
-   cd Service-Call-Bot/svc-agent/deploy/oracle
-   nano .env   # CLAUDE_API_KEY, ADMIN_PASSWORD, CALL_API_SECRET, SITE_ADDRESS=<ip-with-dashes>.sslip.io
-   docker compose up -d --build
+   cd ~/Service-Call-Bot && git pull
+   cd svc-agent/deploy/oracle && docker compose stop caddy
+   sudo bash ~/Service-Call-Bot/infra/oracle-vm/setup.sh 140-238-251-141.sslip.io
+   docker compose up -d --build --remove-orphans
+   sudo bash ~/Service-Call-Bot/infra/oracle-vm/add-site.sh svc-agent proxy 8080 --host 140-238-251-141.sslip.io
    ```
+
+   **Checked 2026-10-01 in a cloud session**, by replaying that move from the
+   old layout. A booking made before the move was still there afterwards,
+   with `existing data kept`. In the end state:
+   - the bot, a proxied app and a static site all answered on their own
+     hostnames;
+   - a clashing name was rejected and rolled back with the other sites still
+     up, and re-running `setup.sh` changed nothing;
+   - the dashboard's own `setup_vm.sh` added its site file, was rejected on a
+     taken name, and served `/healthz` 200 through Caddy.
 
    **Checked 2026-09-30 in a cloud session** (x86, so not the Arm build
    itself): the image built, including the `apt-get install tzdata` step
@@ -516,7 +544,8 @@ question.
 
    Update: `git pull && docker compose up -d --build`. Logs:
    `docker compose logs -f app`. The subnet's security list must allow TCP
-   80 and 443 from `0.0.0.0/0`; `setup.sh` opens the VM's own iptables.
+   80 and 443 from `0.0.0.0/0`; `infra/oracle-vm/setup.sh` opens the VM's
+   own iptables.
    **Oracle stops Always Free VMs idle for 7 days** (CPU p95, network and
    memory all under 20%); the disk is kept. Upgrading the tenancy to Pay As
    You Go keeps Always Free resources free and ends that — the user's call.
