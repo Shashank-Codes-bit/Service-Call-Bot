@@ -12,6 +12,7 @@ import { addDays, today, timestamp, weekdayOf, type IsoDate } from '../shared/da
 import { nextBookingReference } from '../shared/bookings.ts';
 import { SampleFleet, at, type SampleBooking } from './sample.ts';
 import type { Pool } from '../shared/types.ts';
+import { GREETING, fill, spokenNumber } from '../call/templates.ts';
 
 const BOOKING_WINDOW_DAYS = 30; // D5: latest bookable day is 30 days ahead.
 
@@ -632,7 +633,6 @@ const insertSession = db.prepare(
 const insertLine = db.prepare(
   `INSERT INTO transcripts (session_id, turn_index, speaker, text, created_at) VALUES (?, ?, ?, ?, ?)`,
 );
-const spoken = (m: string) => `${m.slice(0, 5)} ${m.slice(5)}`;
 const centreName = centres[0]!.name;
 
 let sessionSeq = 0;
@@ -655,9 +655,10 @@ function conversation(
   );
   return id;
 }
+/** The agent's own opening line, so a sample call reads like a real one. */
 const hello = (mobile: string): ['agent', string] => [
   'agent',
-  `${centreName}. I'm the booking assistant, an AI. You're calling from ${spoken(mobile)}, is that the number the car is registered under?`,
+  fill(GREETING[0], { centre: centreName, number: spokenNumber(mobile) }),
 ];
 
 const SLOT_TIME = { morning: '8:30', afternoon: '2' } as const;

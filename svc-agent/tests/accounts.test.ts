@@ -65,6 +65,10 @@ describe('sign-up', () => {
     const db = registry.get('sharma-indore')!.db;
     expect((db.prepare(`SELECT name FROM centres WHERE id = 1`).get() as { name: string }).name).toBe('Sharma Motors');
     expect((db.prepare(`SELECT COUNT(*) n FROM bookings`).get() as { n: number }).n).toBeGreaterThan(10);
+    // The sample calls greet with this centre's name, not the template's.
+    const greetings = db.prepare(`SELECT text FROM transcripts WHERE turn_index = 0`).all() as { text: string }[];
+    expect(greetings.length).toBeGreaterThan(0);
+    expect(greetings.every((g) => g.text.startsWith('Sharma Motors.'))).toBe(true);
   });
 
   it('refuses a taken user ID, a short password and a bad user ID', async () => {

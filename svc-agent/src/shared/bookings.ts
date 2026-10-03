@@ -243,35 +243,44 @@ export const LATE_AFTER_MINUTES = 30;
  * than half an hour past its drop time.
  */
 export function dayBookings(db: Database, centreId: number, date: IsoDate, now = new Date()) {
-  const rows = db
-    .prepare(
-      `SELECT b.booking_reference AS reference, b.booking_date, b.drop_slot, b.expected_pickup,
-              b.service_type AS pool, b.complaint_note AS note, b.status, b.source,
-              b.created_at, b.arrived_at,
-              c.name AS customer_name, c.mobile_number,
-              v.id AS vehicle_id, v.model, v.registration_number,
-              s.service_number, s.service_type, s.is_free
-       FROM bookings b
-       JOIN vehicles v ON v.id = b.vehicle_id
-       JOIN customers c ON c.id = v.customer_id
-       LEFT JOIN service_due s ON s.vehicle_id = v.id
-       WHERE b.centre_id = ? AND b.booking_date = ? AND b.status != 'cancelled'
-       ORDER BY b.drop_slot, b.created_at, b.booking_reference`,
-    )
-    .all(centreId, date) as Array<{
-    reference: string;
-    drop_slot: DropSlot;
-    status: string;
-    arrived_at: string | null;
-  } & Record<string, unknown>>;
+  return withLate(
+    db
+      .prepare(`${BOARD_SELECT} WHERE b.centre_id = ? AND b.booking_date = ? AND b.status != 'cancelled'
+                ORDER BY b.drop_slot, b.created_at, b.booking_reference`)
+      .all(centreId, date) as BoardRow[],
+    now,
+  );
+}
 
-  const isToday = date === today(now);
+/** One booking, shaped as the board shows it, whatever its status. */
+export function bookingByReference(db: Database, reference: string, now = new Date()) {
+  const row = db.prepare(`${BOARD_SELECT} WHERE b.booking_reference = ?`).get(reference) as BoardRow | undefined;
+  return row ? withLate([row], now)[0] : undefined;
+}
+
+type BoardRow = { reference: string; booking_date: IsoDate; drop_slot: DropSlot; status: string; arrived_at: string | null } & Record<string, unknown>;
+
+const BOARD_SELECT = `
+  SELECT b.booking_reference AS reference, b.booking_date, b.drop_slot, b.expected_pickup,
+         b.service_type AS pool, b.complaint_note AS note, b.status, b.source,
+         b.created_at, b.arrived_at,
+         c.name AS customer_name, c.mobile_number,
+         v.id AS vehicle_id, v.model, v.registration_number,
+         s.service_number, s.service_type, s.is_free
+  FROM bookings b
+  JOIN vehicles v ON v.id = b.vehicle_id
+  JOIN customers c ON c.id = v.customer_id
+  LEFT JOIN service_due s ON s.vehicle_id = v.id`;
+
+function withLate(rows: BoardRow[], now: Date) {
   const minutesNow = now.getHours() * 60 + now.getMinutes();
   return rows.map((r) => {
     const [h, m] = DROP_TIMES[r.drop_slot].split(':').map(Number) as [number, number];
+    const pastDrop = minutesNow - (h * 60 + m);
     const late =
-      isToday && r.status === 'open' && !r.arrived_at && minutesNow > h * 60 + m + LATE_AFTER_MINUTES;
-    return { ...r, late };
+      r.booking_date === today(now) && r.status === 'open' && !r.arrived_at && pastDrop > LATE_AFTER_MINUTES;
+    // Counted on the centre's clock, not the viewer's: a browser elsewhere would get it wrong.
+    return { ...r, late, late_min: late ? pastDrop : 0 };
   });
 }
 

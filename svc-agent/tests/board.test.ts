@@ -89,6 +89,7 @@ describe('GET /api/day', () => {
     const late = (hhmm: string) => dayBookings(db, 1, TODAY, at(hhmm)).find((b) => b.reference === ref)!.late;
     expect(late('08:59')).toBe(false);
     expect(late('09:01')).toBe(true);
+    expect(dayBookings(db, 1, TODAY, at('09:01')).find((b) => b.reference === ref)!.late_min).toBe(31);
     db.prepare(`UPDATE bookings SET arrived_at = ? WHERE booking_reference = ?`).run(`${TODAY}T09:05:00+05:30`, ref);
     expect(late('10:00')).toBe(false);
   });

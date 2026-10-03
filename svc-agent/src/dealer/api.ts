@@ -17,6 +17,7 @@ import {
 } from '../shared/capacity.ts';
 import {
   arrivals,
+  bookingByReference,
   closeBooking,
   createBooking,
   dayBookings,
@@ -222,6 +223,20 @@ export function api(db: Database): Router {
       return res.status(409).json({ error: 'booking is already closed', kind: 'not_open' });
     }
     res.json({ ok: true, reference, status });
+  });
+
+  /** One booking for the detail drawer, with the call that made it if the agent did. */
+  r.get('/bookings/:reference', (req, res) => {
+    const reference = String(req.params.reference);
+    const b = bookingByReference(db, reference);
+    if (!b) return res.status(404).json({ error: 'no such booking' });
+    const call = db
+      .prepare(
+        `SELECT id, started_at FROM sessions WHERE json_extract(data, '$.bookingReference') = ?
+         ORDER BY started_at DESC LIMIT 1`,
+      )
+      .get(reference) as { id: string; started_at: string } | undefined;
+    res.json({ ...b, call: call ?? null });
   });
 
   /** Move an open booking, keeping its reference. A full target is a 409. */

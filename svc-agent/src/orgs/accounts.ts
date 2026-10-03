@@ -142,7 +142,12 @@ export class Accounts {
     seed({ now, dbPath: path });
     const db = new Database(path);
     try {
-      db.prepare(`UPDATE centres SET name = ? WHERE id = 1`).run(name);
+      // The sample calls greet with the centre's name; they should say this one.
+      const was = (db.prepare(`SELECT name FROM centres WHERE id = 1`).get() as { name: string }).name;
+      db.transaction(() => {
+        db.prepare(`UPDATE centres SET name = ? WHERE id = 1`).run(name);
+        db.prepare(`UPDATE transcripts SET text = replace(text, ?, ?)`).run(was, name);
+      })();
     } finally {
       db.close();
     }

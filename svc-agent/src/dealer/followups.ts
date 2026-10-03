@@ -13,6 +13,15 @@ import { LEAD_REPORTS, type LeadAudience } from './reports.ts';
  */
 
 export const TEAMS = Object.keys(LEAD_REPORTS) as LeadAudience[];
+
+/** The team as the desk names it — the same words the portal shows. */
+export const TEAM_NAMES: Record<LeadAudience, string> = {
+  retention: 'Retention',
+  'crm-data': 'Data team',
+  'customer-care': 'Customer care',
+  reception: 'Reception',
+  'service-manager': 'Service manager',
+};
 export const isTeam = (v: unknown): v is LeadAudience => TEAMS.includes(v as LeadAudience);
 
 export const OUTCOMES = {
@@ -293,7 +302,7 @@ export function followUpsCsv(rows: FollowUpRow[]): string {
       [
         r.created_at.slice(0, 16).replace('T', ' '),
         formatWait(r.waited_min),
-        LEAD_REPORTS[r.team]?.title ?? r.team,
+        TEAM_NAMES[r.team] ?? r.team,
         r.customer_name,
         r.mobile_number,
         r.vehicle_registration,

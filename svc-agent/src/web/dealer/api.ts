@@ -1,48 +1,126 @@
 // The browser reads the same definitions the server does. shared/ has no node
 // imports, which is what makes one source of truth possible across both.
 export { DROP_SLOTS, POOLS, type DropSlot, type Pool } from '../../shared/types.ts';
-export { WEEKDAY_NAMES as WEEKDAYS } from '../../shared/dates.ts';
-import { DROP_TIMES, type DropSlot, type Pool } from '../../shared/types.ts';
+import type { DropSlot, Pool } from '../../shared/types.ts';
 
-/** The drop clock time for a slot that arrived as loose JSON. */
-export function dropTime(slot: unknown): string {
-  return slot === 'morning' || slot === 'afternoon' ? DROP_TIMES[slot] : '';
-}
-
-export type Cell = { total: number; booked: number; free: number };
-export type CapacityDay = {
-  date: string;
-  weekday: number;
-  pools: Record<Pool, Record<DropSlot, Cell>>;
+export type Me = {
+  slug: string;
+  name: string;
+  userId: string;
+  initials: string;
+  today: string;
+  turnsToday?: number;
+  turnCap?: number;
 };
-export type Master = Record<string, Record<Pool, Record<DropSlot, number>>>;
 
-export type Conflict = {
-  date: string;
+export type DayBooking = {
+  reference: string;
+  booking_date: string;
+  drop_slot: DropSlot;
+  expected_pickup: string;
   pool: Pool;
-  dropSlot: DropSlot;
-  requested: number;
-  heldAt: number;
+  note: string | null;
+  status: 'open' | 'completed' | 'cancelled';
+  source: 'ai' | 'dealer';
+  created_at: string;
+  arrived_at: string | null;
+  customer_name: string;
+  mobile_number: string;
+  vehicle_id: number;
+  model: string;
+  registration_number: string;
+  service_number: number | null;
+  service_type: 'minor' | 'major' | null;
+  is_free: number | null;
+  late: boolean;
+  /** Minutes past the drop time, when late. */
+  late_min: number;
 };
 
-export type Applied = {
-  from: string;
-  to: string;
-  created: number;
-  updated: number;
-  conflicts: Conflict[];
+export type Place = { pool: Pool; drop_slot: DropSlot; total: number; used: number };
+export type DayView = { date: string; today: string; bookings: DayBooking[]; places: Place[] };
+export type StripDay = { date: string; cars: number; free: number | null };
+export type FreeDay = { date: string; pools: Record<Pool, Record<DropSlot, number>> };
+
+export type Hit = {
+  customer_id: number;
+  name: string;
+  mobile_number: string;
+  vehicle_id: number;
+  registration_number: string;
+  model: string;
+  open_reference: string | null;
+  open_date: string | null;
+  open_slot: DropSlot | null;
 };
 
-export type Vehicle = {
+export type Car = {
   id: number;
   registration_number: string;
   model: string;
-  customer_name: string;
-  mobile_number: string;
-  service_type: Pool | null;
-  is_free: number;
+  service_number: number | null;
+  service_type: 'minor' | 'major' | null;
+  is_free: number | null;
   due_date: string | null;
-  has_open_booking: number;
+  blocker: string | null;
+};
+export type Customer = { id: number; name: string; mobile_number: string; cars: Car[] };
+
+export type Booked = {
+  id: number;
+  reference: string;
+  bookingDate: string;
+  dropSlot: DropSlot;
+  expectedPickup: string;
+};
+
+export type Team = 'customer-care' | 'retention' | 'service-manager' | 'crm-data' | 'reception';
+export type Outcome = 'booked' | 'will_call_back' | 'no_answer' | 'not_interested' | 'wrong_number';
+
+export type FollowUp = {
+  id: number;
+  created_at: string;
+  reason: string;
+  reason_label: string;
+  team: Team;
+  customer_name: string | null;
+  mobile_number: string;
+  vehicle_registration: string | null;
+  vehicle_model: string | null;
+  caller_words: string | null;
+  status: 'open' | 'done';
+  outcome: Outcome | null;
+  outcome_label: string | null;
+  note: string | null;
+  closed_by: string | null;
+  closed_at: string | null;
+  session_id: string | null;
+  waited_min: number;
+};
+
+export type TeamTile = {
+  team: Team;
+  title: string;
+  open: number;
+  oldestWaitingMin: number | null;
+  doneToday: number;
+};
+
+export type FollowUpPage = {
+  rows: FollowUp[];
+  total: number;
+  openTotal: number;
+  teams: TeamTile[];
+  week: { from: string; total: number; closed: number; booked: number; medianWaitMin: number | null };
+  outcomes: Record<Outcome, string>;
+};
+
+export type FollowUpFilter = {
+  status: 'open' | 'done' | 'all';
+  when: 'today' | 'yesterday' | '7d' | 'all';
+  teams: Team[];
+  q: string;
+  sort: 'oldest' | 'newest';
 };
 
 export type CallRow = {
@@ -52,11 +130,12 @@ export type CallRow = {
   ended_at: string | null;
   caller_number: string;
   customer_name: string | null;
+  known_name: string | null;
   model: string | null;
   registration: string | null;
   booking_reference: string | null;
   lead_reason: string | null;
-  external_id: string | null;
+  last_caller_words: string | null;
   turns: number;
 };
 
@@ -64,166 +143,123 @@ export type CallDetail = {
   id: string;
   state: string;
   started_at: string;
-  data: Record<string, string | undefined>;
-  transcript: { turn_index: number; speaker: 'agent' | 'caller'; text: string }[];
+  ended_at: string | null;
+  data: Record<string, unknown>;
+  transcript: { turn_index: number; speaker: 'agent' | 'caller'; text: string; created_at: string }[];
 };
 
-export type KbEntry = { key: string; answer: string };
+export type Master = Record<string, Record<Pool, Record<DropSlot, number>>>;
+export type Applied = {
+  from: string;
+  to: string;
+  created: number;
+  updated: number;
+  conflicts: { date: string; pool: Pool; dropSlot: DropSlot; requested: number; heldAt: number }[];
+};
+
+export type Summary = {
+  today: string;
+  centre: { id: number; name: string; landline: string; opens_at: string; closes_at: string };
+  counts: { customers: number; vehicles: number; openBookings: number; leads: number };
+};
 
 /** One turn of the conversation — the same contract a voice layer receives. */
 export type ChatReply = {
   sessionId: string;
   reply: string;
   ended: boolean;
-  /** The agent is waiting for a number — a phone would switch to its keypad. */
-  expectsDigits?: boolean;
   bookingReference?: string;
-  leadReason?: string;
-  /** DEMO_MODE only: what the caller's phone would have received this turn. */
   sms?: string[];
 };
 
-export type Report = {
-  audience: string;
-  title: string;
-  why: string;
-  date: string;
-  rows: Record<string, unknown>[];
-  groups?: { label: string; hint: string; rows: Record<string, unknown>[] }[];
-};
-
+/** A refusal the UI shows as a message rather than as a fault. */
 export class ApiError extends Error {
   constructor(
+    message: string,
     readonly status: number,
-    readonly body: { error?: string; kind?: string; reference?: string },
+    readonly kind?: string,
   ) {
-    super(body.error ?? `request failed (${status})`);
+    super(message);
+    this.name = 'ApiError';
   }
 }
 
-/**
- * The admin password, held for this tab only.
- *
- * Reads need none — the portal link is meant to be shareable. Only writes
- * carry it, and it is asked for once, when the first write is attempted,
- * rather than gating the whole page behind a login nobody needs.
- */
-const PASSWORD_KEY = 'svc-agent-admin';
+/** Anywhere a 401 lands, the app goes back to the sign-in page. */
+let onSignedOut: () => void = () => {};
+export const whenSignedOut = (fn: () => void) => {
+  onSignedOut = fn;
+};
 
-function storedPassword(): string {
-  try {
-    return sessionStorage.getItem(PASSWORD_KEY) ?? '';
-  } catch {
-    return ''; // private window, or storage blocked
-  }
-}
-
-function rememberPassword(value: string): void {
-  try {
-    sessionStorage.setItem(PASSWORD_KEY, value);
-  } catch {
-    /* nothing to do; the header still goes on this request */
-  }
-}
-
-function forgetPassword(): void {
-  try {
-    sessionStorage.removeItem(PASSWORD_KEY);
-  } catch {
-    /* ignore */
-  }
-}
-
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const headers: Record<string, string> = {};
-  if (init?.body) headers['content-type'] = 'application/json';
-  const password = storedPassword();
-  if (password) headers['x-admin-password'] = password;
-
-  const res = await fetch(`/api${path}`, { ...init, headers });
-  const body = await res.json().catch(() => ({}));
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const res = await fetch(path, {
+    ...init,
+    credentials: 'same-origin',
+    headers: { 'content-type': 'application/json', ...(init.headers ?? {}) },
+  });
+  const body = (await res.json().catch(() => ({}))) as { error?: string; kind?: string };
   if (!res.ok) {
-    // A rejected password should not stay cached, or every later write fails
-    // silently with the same stale value.
-    if (res.status === 401) forgetPassword();
-    throw new ApiError(res.status, body);
+    if (res.status === 401 && !path.startsWith('/auth/')) onSignedOut();
+    throw new ApiError(body.error ?? `${res.status} ${res.statusText}`, res.status, body.kind);
   }
   return body as T;
 }
 
-/**
- * Run a write, asking for the password if the server rejects it, then retry
- * once. One prompt at the moment it is needed.
- */
-export async function withPassword<T>(run: () => Promise<T>): Promise<T> {
-  try {
-    return await run();
-  } catch (e) {
-    // 503 means the server has no password configured at all — prompting
-    // would be asking for something that cannot work.
-    if ((e as ApiError).status !== 401) throw e;
-    const entered = window.prompt('Admin password to make changes:');
-    if (!entered) throw e;
-    rememberPassword(entered);
-    return run();
-  }
+const json = (method: string, body: unknown): RequestInit => ({ method, body: JSON.stringify(body) });
+
+export function followUpQuery(f: FollowUpFilter, extra: Record<string, string | number> = {}): string {
+  const p = new URLSearchParams({
+    status: f.status,
+    when: f.when,
+    sort: f.sort,
+    ...(f.teams.length ? { teams: f.teams.join(',') } : {}),
+    ...(f.q.trim() ? { q: f.q.trim() } : {}),
+    ...Object.fromEntries(Object.entries(extra).map(([k, v]) => [k, String(v)])),
+  });
+  return p.toString();
 }
 
 export const api = {
-  summary: () =>
-    request<{
-      today: string;
-      centre: { name: string; landline: string; opens_at: string; closes_at: string };
-      counts: Record<string, number>;
-    }>('/summary'),
+  me: () => request<Me>('/auth/me'),
+  login: (userId: string, password: string) => request<Me>('/auth/login', json('POST', { userId, password })),
+  signup: (centreName: string, userId: string, password: string) =>
+    request<Me>('/auth/signup', json('POST', { centreName, userId, password })),
+  logout: () => request<{ ok: true }>('/auth/logout', { method: 'POST' }),
 
-  master: () => request<Master>('/capacity/master'),
-  /** Saving applies to the live window too, and reports what could not shrink. */
-  saveMaster: (m: Master) =>
-    request<{ ok: true; master: Master; applied: Applied }>('/capacity/master', {
-      method: 'PUT',
-      body: JSON.stringify(m),
-    }),
-  regenerate: () => request<Applied>('/capacity/regenerate', { method: 'POST' }),
-  window: (days = 30) => request<CapacityDay[]>(`/capacity/window?days=${days}`),
+  summary: () => request<Summary>('/api/summary'),
+  vehicles: () => request<{ id: number; customer_name: string; mobile_number: string; model: string }[]>('/api/vehicles'),
+  day: (date?: string) => request<DayView>(`/api/day${date ? `?date=${date}` : ''}`),
+  days: (n = 14) => request<StripDay[]>(`/api/days?days=${n}`),
+  free: (n = 14) => request<FreeDay[]>(`/api/free?days=${n}`),
+  search: (q: string) => request<Hit[]>(`/api/search?q=${encodeURIComponent(q)}`),
+  customer: (id: number) => request<Customer>(`/api/customers/${id}`),
 
-  vehicles: () => request<Vehicle[]>('/vehicles'),
-  arrivals: (date: string) =>
-    request<{ date: string; rows: Record<string, unknown>[] }>(`/bookings/arrivals?date=${date}`),
-  book: (b: { vehicleId: number; pool: Pool; bookingDate: string; dropSlot: DropSlot }) =>
-    request<{ reference: string; bookingDate: string; dropSlot: DropSlot; expectedPickup: string }>(
-      '/bookings',
-      { method: 'POST', body: JSON.stringify(b) },
-    ),
-  closeBooking: (reference: string, status: 'completed' | 'cancelled') =>
-    request<{ ok: true }>(`/bookings/${encodeURIComponent(reference)}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ status }),
-    }),
+  booking: (reference: string) =>
+    request<DayBooking & { call: { id: string; started_at: string } | null }>(`/api/bookings/${encodeURIComponent(reference)}`),
+  book: (b: { vehicleId: number; pool: Pool; bookingDate: string; dropSlot: DropSlot; complaintNote?: string | null }) =>
+    request<Booked>('/api/bookings', json('POST', b)),
+  reschedule: (reference: string, bookingDate: string, dropSlot: DropSlot) =>
+    request<Booked>(`/api/bookings/${reference}/reschedule`, json('POST', { bookingDate, dropSlot })),
+  setStatus: (reference: string, status: 'completed' | 'cancelled') =>
+    request<{ ok: true }>(`/api/bookings/${reference}`, json('PATCH', { status })),
+  arrived: (reference: string, arrived: boolean) =>
+    request<{ ok: true }>(`/api/bookings/${reference}`, json('PATCH', { arrived })),
 
-  chatStart: (callerNumber: string) =>
-    request<ChatReply>('/chat/start', { method: 'POST', body: JSON.stringify({ callerNumber }) }),
+  followUps: (f: FollowUpFilter, offset: number, limit = 10) =>
+    request<FollowUpPage>(`/api/followups?${followUpQuery(f, { offset, limit })}`),
+  changeFollowUp: (id: number, change: Record<string, unknown>) =>
+    request<{ ok: true; changed: number }>(`/api/followups/${id}`, json('PATCH', change)),
+  bulkFollowUps: (ids: number[], change: Record<string, unknown>) =>
+    request<{ ok: true; changed: number }>('/api/followups/bulk', json('POST', { ids, ...change })),
+  csvUrl: (f: FollowUpFilter, ids?: number[]) =>
+    `/api/followups.csv?${followUpQuery(f, ids?.length ? { ids: ids.join(',') } : {})}`,
+
+  calls: (days = 7) => request<{ date: string; from: string; rows: CallRow[] }>(`/api/calls?days=${days}`),
+  call: (id: string) => request<CallDetail>(`/api/calls/${encodeURIComponent(id)}`),
+
+  master: () => request<Master>('/api/capacity/master'),
+  saveMaster: (m: Master) => request<{ ok: true; master: Master; applied: Applied }>('/api/capacity/master', json('PUT', m)),
+
+  chatStart: (callerNumber: string) => request<ChatReply>('/api/chat/start', json('POST', { callerNumber })),
   chatTurn: (sessionId: string, utterance: string) =>
-    request<ChatReply>('/chat/turn', {
-      method: 'POST',
-      body: JSON.stringify({ sessionId, utterance }),
-    }),
-
-  calls: (date: string) => request<{ date: string; rows: CallRow[] }>(`/calls?date=${date}`),
-  call: (id: string) => request<CallDetail>(`/calls/${id}`),
-
-  kb: () => request<KbEntry[]>('/kb'),
-  saveKb: (key: string, answer: string) =>
-    request<{ ok: true; entries: KbEntry[] }>(`/kb/${encodeURIComponent(key)}`, {
-      method: 'PUT',
-      body: JSON.stringify({ answer }),
-    }),
-  deleteKb: (key: string) =>
-    request<{ ok: true; entries: KbEntry[] }>(`/kb/${encodeURIComponent(key)}`, {
-      method: 'DELETE',
-    }),
-
-  reportList: () => request<{ audience: string; title: string; why: string }[]>('/reports'),
-  report: (audience: string, date: string) =>
-    request<Report>(`/reports/${audience}?date=${date}`),
+    request<ChatReply>('/api/chat/turn', json('POST', { sessionId, utterance })),
 };
