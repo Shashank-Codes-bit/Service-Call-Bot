@@ -8,6 +8,24 @@ type Caller = { name: string; mobile: string; car: string };
 /** The customers the agent's scenarios were written around, first in the list. */
 const SCENARIOS = ['9810011001', '9810022002', '9810066006', '9810088008', '9810055005', '9810111011'];
 const ANOTHER = '';
+function CopyLink({ url }: { url: string }) {
+  const [done, setDone] = useState(false);
+  return (
+    <button
+      type="button"
+      className="btn sm"
+      onClick={() =>
+        navigator.clipboard?.writeText(url).then(() => {
+          setDone(true);
+          setTimeout(() => setDone(false), 1400);
+        })
+      }
+    >
+      {done ? 'Copied' : 'Copy link'}
+    </button>
+  );
+}
+
 const took = (ms: number) => (ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`);
 
 /**
@@ -107,10 +125,25 @@ export function Agent({ me, changed }: { me: Me; changed: () => void }) {
       <div className="dayline">
         <h2>Your agent</h2>
         <span className="small muted">
-          Talk to it the way a customer would. Typed for now; the voice button comes next.
+          Talk to it the way a customer would.
           {me.turnCap ? ` ${me.turnCap} turns a day per centre.` : ''}
         </span>
       </div>
+      <section className="panel">
+        <h3>Your agent’s page</h3>
+        <p className="small">
+          The page to share: anyone can talk to your agent by voice or chat there, as one of the sample customers. No sign-in.
+        </p>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <a className="btn primary sm" href={`/try/${me.slug}`} target="_blank" rel="noreferrer">
+            Open the page
+          </a>
+          <CopyLink url={`${location.origin}/try/${me.slug}`} />
+          <span className="nums small muted" style={{ userSelect: 'all' }}>
+            {location.host}/try/{me.slug}
+          </span>
+        </div>
+      </section>
       <section className="voice" aria-label="Talk to the agent">
         {!sessionId ? (
           <form onSubmit={start} aria-label="Start a conversation">

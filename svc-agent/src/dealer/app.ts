@@ -16,6 +16,8 @@ import {
 import { today } from '../shared/dates.ts';
 import { AccountError, initials, type Accounts, type Org } from '../orgs/accounts.ts';
 import { dailyTurnCap, turnsToday, type OrgHandle, type Registry } from '../orgs/registry.ts';
+import { callIdentity } from '../call/vapi.ts';
+import { publicApi } from './public.ts';
 
 /**
  * The whole HTTP surface, built over a set of centres. Kept apart from the
@@ -125,23 +127,30 @@ export function buildApp({
   });
 
   // -------------------------------------------------------------------------
-  // The voice layer: a shared secret, and the centre named by `x-org` or
-  // `?org=`, else the first one.
+  // The voice layer: a shared secret, and the centre named by `x-org`,
+  // `?org=`, or (a web call from the public page) the call's own variables —
+  // else the first one.
   // -------------------------------------------------------------------------
 
-  function voice(pick: (h: OrgHandle) => express.Router): express.RequestHandler {
+  function voice(pick: (h: OrgHandle) => express.Router, { capInVoice = false } = {}): express.RequestHandler {
     return (req, res, next) => {
-      const slug = String(req.get('x-org') ?? req.query['org'] ?? config.defaultOrg);
+      const slug = String(req.get('x-org') ?? req.query['org'] ?? callIdentity(req.body).org ?? config.defaultOrg);
       const org = accounts.get(slug);
       const h = org && registry.get(slug);
       if (!org || !h) return res.status(404).json({ error: `no centre ${slug}` });
+      // Vapi speaks the cap itself (vapi.ts): a 429 would be dead air.
+      if (capInVoice) return pick(h)(req, res, next);
       dailyTurnCap(h.db, capFor(org))(req, res, (err?: unknown) =>
         err ? next(err) : pick(h)(req, res, next),
       );
     };
   }
   app.use('/call', rateLimit({ max: 120 }), requireCallSecret, voice((h) => h.call));
-  app.use('/vapi', rateLimit({ max: 240 }), requireCallSecret, voice((h) => h.vapi));
+  app.use('/vapi', rateLimit({ max: 240 }), requireCallSecret, voice((h) => h.vapi, { capInVoice: true }));
+
+  // The public "Talk to the agent" page's data and its typed / browser-voice
+  // conversation. No sign-in: it is the page a centre shares.
+  app.use('/public', publicApi({ accounts, registry, capFor }));
 
   // The platform needs somewhere to check we are alive that costs nothing.
   app.get('/health', (_req, res) => res.json({ ok: true, today: new Date().toISOString() }));
@@ -149,7 +158,7 @@ export function buildApp({
   // An unknown /api path is a client bug and should say so in JSON. Without
   // this the SPA catch-all below answers it with index.html and a 200, so a
   // mistyped endpoint — or one that has been removed — looks like it worked.
-  app.use(['/api', '/auth'], (_req, res) => res.status(404).json({ error: 'no such endpoint' }));
+  app.use(['/api', '/auth', '/public'], (_req, res) => res.status(404).json({ error: 'no such endpoint' }));
 
   if (dist && existsSync(dist)) {
     app.use(express.static(dist));

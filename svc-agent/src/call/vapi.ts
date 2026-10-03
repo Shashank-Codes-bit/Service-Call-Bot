@@ -19,14 +19,58 @@ import { loadSession } from './session.ts';
 
 type OpenAIMessage = { role: string; content?: unknown };
 
+type Vars = Record<string, unknown>;
 type VapiBody = {
   messages?: OpenAIMessage[];
   stream?: boolean;
   /** Vapi nests the live call under `call`, with the caller under `customer`. */
-  call?: { id?: string; customer?: { number?: string } };
+  call?: {
+    id?: string;
+    customer?: { number?: string };
+    assistantOverrides?: { variableValues?: Vars };
+    metadata?: Vars;
+  };
   customer?: { number?: string };
-  metadata?: Record<string, unknown>;
+  assistantOverrides?: { variableValues?: Vars };
+  metadata?: Vars;
 };
+
+/**
+ * Which centre a web call is for and who is calling, as the public page set
+ * them (`variableValues: { org, callerNumber }`). Read first from the system
+ * message, where Vapi substitutes variables into the assistant's prompt
+ * (`svc-agent org={{org}} caller={{callerNumber}}`, written by vapi:setup) —
+ * the one place a custom LLM is sure to receive them — then from wherever
+ * else Vapi carries them. Untrusted either way: the org must exist, and the
+ * caller only ever gets a demo caller's view.
+ */
+export function callIdentity(body: unknown): { org?: string; callerNumber?: string } {
+  const b = (body ?? {}) as VapiBody;
+  const system = (b.messages ?? []).find((m) => m.role === 'system');
+  const text = system ? textOf(system.content) : '';
+  const tag = (name: string) => /^[\w-]+$/.exec(new RegExp(`\\b${name}=(\\S+)`).exec(text)?.[1] ?? '')?.[0];
+  const vars = [b.call?.assistantOverrides?.variableValues, b.assistantOverrides?.variableValues, b.call?.metadata, b.metadata];
+  const pick = (k: string) => {
+    for (const v of vars) {
+      const x = v?.[k];
+      if (typeof x === 'string' && x && !x.includes('{{')) return x;
+    }
+    return undefined;
+  };
+  const org = (tag('org') ?? pick('org'))?.toLowerCase();
+  const caller = (tag('caller') ?? pick('callerNumber') ?? '').replace(/\D/g, '');
+  return {
+    ...(org && /^[a-z0-9][a-z0-9-]{1,29}$/.test(org) ? { org } : {}),
+    ...(caller.length >= 10 ? { callerNumber: caller.slice(-10) } : {}),
+  };
+}
+
+/** The assistant's end-call phrase. Only ever said at the end. */
+export const GOODBYE = 'Goodbye.';
+
+/** Said, then silence, when a centre has used its day: a caller hears a sentence, not a dead line. */
+export const DAILY_CAP_LINE =
+  "Sorry, this demo line has had all its calls for today. Please try again tomorrow — thanks for calling.";
 
 /** Content may be a plain string or OpenAI's array-of-parts form. */
 function textOf(content: unknown): string {
@@ -47,6 +91,8 @@ function latestUserUtterance(messages: OpenAIMessage[] = []): string {
   return '';
 }
 
+class CapReached extends Error {}
+
 /** One SSE chunk in OpenAI's streaming shape. */
 function chunk(id: string, delta: Record<string, unknown>, finish: string | null = null): string {
   return `data: ${JSON.stringify({
@@ -58,17 +104,20 @@ function chunk(id: string, delta: Record<string, unknown>, finish: string | null
   })}\n\n`;
 }
 
-export function vapiApi(db: Database, deps: CallDeps = buildDeps(db)): Router {
+export function vapiApi(
+  db: Database,
+  deps: CallDeps = buildDeps(db),
+  opts: { overCap?: () => boolean } = {},
+): Router {
   const r = Router();
 
   r.post('/chat/completions', async (req, res) => {
     const body = (req.body ?? {}) as VapiBody;
 
     const externalId = body.call?.id ?? String(body.metadata?.['callId'] ?? '');
-    const callerNumber = (body.call?.customer?.number ?? body.customer?.number ?? '').replace(
-      /\D/g,
-      '',
-    );
+    const callerNumber =
+      callIdentity(body).callerNumber ??
+      (body.call?.customer?.number ?? body.customer?.number ?? '').replace(/\D/g, '').slice(-10);
     const utterance = latestUserUtterance(body.messages);
 
     if (!externalId) {
@@ -77,6 +126,7 @@ export function vapiApi(db: Database, deps: CallDeps = buildDeps(db)): Router {
 
     let reply: string;
     try {
+      if (opts.overCap?.()) throw new CapReached();
       // First turn of this call: no session yet, so open one. Vapi's greeting
       // and ours would collide, so its assistant must be configured with no
       // first message of its own — we speak first.
@@ -100,11 +150,18 @@ export function vapiApi(db: Database, deps: CallDeps = buildDeps(db)): Router {
           ? ''
           : (await handleTurn(db, deps, sessionId, utterance)).reply;
       }
+      // The conversation is over: say so in the one word the assistant is set
+      // to hang up on (vapi-setup.ts), so the line closes with the call.
+      if (reply && loadSession(db, sessionId)?.state === 'ended') reply = `${reply} ${GOODBYE}`;
     } catch (err) {
-      // The caller is on a live phone line. They hear a sentence, never a
-      // stack trace, and the call stays up.
-      console.error('vapi turn failed', err);
-      reply = "Sorry, I lost that for a moment. Could you say it again?";
+      if (err instanceof CapReached) {
+        reply = `${DAILY_CAP_LINE} ${GOODBYE}`;
+      } else {
+        // The caller is on a live phone line. They hear a sentence, never a
+        // stack trace, and the call stays up.
+        console.error('vapi turn failed', err);
+        reply = "Sorry, I lost that for a moment. Could you say it again?";
+      }
     }
 
     // Non-streaming is supported for easy curl testing; Vapi itself streams.

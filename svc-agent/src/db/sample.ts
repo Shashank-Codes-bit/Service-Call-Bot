@@ -188,3 +188,17 @@ export class SampleFleet {
       .run(timestamp(when), reference);
   }
 }
+
+/**
+ * The scenario customers a visitor can call as on the public page, each with
+ * what their call shows off. Only these are listed there — never the rest of
+ * a centre's customers.
+ */
+export const SAMPLE_CALLERS: Array<{ mobile: string; shows: string }> = [
+  { mobile: '9810011001', shows: 'a straight booking' },
+  { mobile: '9810022002', shows: 'two cars on one number' },
+  { mobile: '9810055005', shows: 'a paid major service' },
+  { mobile: '9810066006', shows: 'already has a booking' },
+  { mobile: '9810088008', shows: 'free service lapsed' },
+  { mobile: '9810100010', shows: 'wants the car back the same day' },
+];
