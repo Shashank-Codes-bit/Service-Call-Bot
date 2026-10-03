@@ -26,6 +26,26 @@ export type VoiceCall = { stop: () => void };
 // Vapi
 // ---------------------------------------------------------------------------
 
+type VapiClass = typeof import('@vapi-ai/web').default;
+
+/**
+ * The SDK is CommonJS (`exports.default = Vapi`). The dev server hands back
+ * the class as `default`; the production build wraps the module once more,
+ * so it sits at `default.default`. Take whichever is the constructor — the
+ * plain `default` was "not a constructor" on the live site.
+ */
+export function vapiClassOf(mod: unknown): VapiClass {
+  const m = mod as { default?: unknown };
+  const candidates = [m?.default, (m?.default as { default?: unknown } | undefined)?.default, mod];
+  const found = candidates.find((c) => typeof c === 'function');
+  if (!found) throw new Error('The voice library did not load properly. Use the browser’s voice instead.');
+  return found as VapiClass;
+}
+
+async function loadVapi(): Promise<VapiClass> {
+  return vapiClassOf(await import('@vapi-ai/web'));
+}
+
 type VapiMessage = { type?: string; role?: string; transcriptType?: string; transcript?: string };
 
 export async function startVapi(
@@ -33,8 +53,7 @@ export async function startVapi(
   on: VoiceEvents,
 ): Promise<VoiceCall> {
   // Loaded only when someone presses Talk: the SDK is large, and the portal never needs it.
-  const { default: Vapi } = await import('@vapi-ai/web');
-  const vapi = new Vapi(opts.publicKey);
+  const vapi = new (await loadVapi())(opts.publicKey);
   on.status('connecting');
   vapi.on('call-start', () => on.status('listening'));
   vapi.on('speech-start', () => on.status('speaking'));
