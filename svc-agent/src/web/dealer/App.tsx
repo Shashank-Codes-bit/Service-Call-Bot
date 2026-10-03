@@ -6,15 +6,16 @@ import { Today } from './views/Today.tsx';
 import { FollowUps } from './views/FollowUps.tsx';
 import { Conversations } from './views/Conversations.tsx';
 import { Agent } from './views/Agent.tsx';
+import { Knowledge } from './views/Knowledge.tsx';
 import { BookDrawer, type BookPreset } from './views/BookDrawer.tsx';
 import { DetailDrawer } from './views/DetailDrawer.tsx';
 import { PlacesDrawer } from './views/PlacesDrawer.tsx';
 
-type Page = 'today' | 'conversations' | 'followups' | 'agent';
+type Page = 'today' | 'conversations' | 'followups' | 'knowledge' | 'agent';
 type Route = { page: Page; arg?: string };
 type DrawerState = { kind: 'book'; preset?: BookPreset } | { kind: 'detail'; reference: string } | { kind: 'places' } | null;
 
-const PAGES: Page[] = ['today', 'conversations', 'followups', 'agent'];
+const PAGES: Page[] = ['today', 'conversations', 'followups', 'knowledge', 'agent'];
 
 /** The page lives in the hash, so a reload or the back button stays put. */
 function readRoute(): Route {
@@ -42,10 +43,10 @@ export function App() {
         }}
       />
     );
-  return <Portal me={me} fresh={fresh} onOut={() => setMe(null)} />;
+  return <Portal me={me} fresh={fresh} onOut={() => setMe(null)} refreshMe={() => api.me().then(setMe, () => {})} />;
 }
 
-function Portal({ me, fresh, onOut }: { me: Me; fresh: boolean; onOut: () => void }) {
+function Portal({ me, fresh, onOut, refreshMe }: { me: Me; fresh: boolean; onOut: () => void; refreshMe: () => void }) {
   const [route, setRoute] = useState<Route>(readRoute);
   const [drawer, setDrawer] = useState<DrawerState>(null);
   const [menu, setMenu] = useState(false);
@@ -109,6 +110,7 @@ function Portal({ me, fresh, onOut }: { me: Me; fresh: boolean; onOut: () => voi
     ['today', 'Today'],
     ['conversations', 'Conversations'],
     ['followups', 'Follow-ups'],
+    ['knowledge', 'Knowledge'],
   ];
 
   return (
@@ -199,6 +201,17 @@ function Portal({ me, fresh, onOut }: { me: Me; fresh: boolean; onOut: () => voi
         )}
         {route.page === 'conversations' && <Conversations me={me} version={version} selected={route.arg} go={go} />}
         {route.page === 'followups' && <FollowUps me={me} version={version} changed={changed} go={go} say={say} />}
+        {route.page === 'knowledge' && (
+          <Knowledge
+            me={me}
+            version={version}
+            changed={() => {
+              changed();
+              refreshMe();
+            }}
+            say={say}
+          />
+        )}
         {route.page === 'agent' && <Agent me={me} changed={changed} />}
       </main>
 

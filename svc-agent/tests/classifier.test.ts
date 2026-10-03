@@ -65,6 +65,27 @@ describe('B3 — redaction is asserted on the wire, not trusted', () => {
   });
 });
 
+describe('the knowledge shortlist on the wire', () => {
+  it('names each shortlisted topic and offers only those keys', async () => {
+    const { seen, classifier } = capturing();
+    await classifier
+      .classify({
+        ...REQ,
+        utterance: 'do you service the curvv?',
+        kbTopics: [
+          { key: 'opening_hours', title: 'Opening hours', phrases: ['open', 'timings'] },
+          { key: 'tata_curvv_ev', title: 'Tata Curvv EV', phrases: ['curvv', 'electric'] },
+        ],
+      })
+      .catch(() => undefined);
+    const body = seen[0]!;
+    expect(body).toContain('tata_curvv_ev: Tata Curvv EV (customers say: curvv, electric)');
+    // The enum the model must answer in: the shortlist and "none", nothing
+    // else. (The SDK carries it in the field's description, escaped.)
+    expect(body.replace(/\\/g, '')).toContain('enum: ["none","opening_hours","tata_curvv_ev"]');
+  });
+});
+
 describe('the candidate set is closed', () => {
   it("offers only this caller's own vehicles as options", async () => {
     const { seen, classifier } = capturing();

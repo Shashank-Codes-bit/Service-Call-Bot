@@ -147,6 +147,8 @@ export class Accounts {
       db.transaction(() => {
         db.prepare(`UPDATE centres SET name = ? WHERE id = 1`).run(name);
         db.prepare(`UPDATE transcripts SET text = replace(text, ?, ?)`).run(was, name);
+        // The essentials form carries the name too; a later save must not undo this one.
+        db.prepare(`UPDATE centre_profile SET data = json_set(data, '$.name', ?)`).run(name);
       })();
     } finally {
       db.close();

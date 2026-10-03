@@ -274,9 +274,9 @@ fresh)`, `classifier Haiku (live)`, `clock Asia/Kolkata, today YYYY-MM-DD`,
 ## 5a. Separate centres, sign-in and the service desk (2026-10-03)
 
 Phases 1–3 of the plan agreed after mockup v4
-(https://claude.ai/artifact/E5UYEP11j3C1qn433buzSk). Phase 4 (Knowledge page,
-KB miss carries on, error log) and phase 5 (public `/try/<slug>`, Vapi web
-call) are not built yet.
+(https://claude.ai/artifact/E5UYEP11j3C1qn433buzSk). Phase 4's Knowledge page and the
+KB miss carrying on are built too (below); the internal error log and
+phase 5 (public `/try/<slug>`, Vapi web call) are not.
 
 **Storage: one SQLite file per centre.**
 - `DATA_DIR` defaults to the folder of `DB_PATH`, so `/data` on the VM.
@@ -357,6 +357,41 @@ centre, made by code with no model calls:
   cards;
 - 26 follow-ups over 7 days (9 open: 7 today, 2 yesterday);
 - 9 conversations today, in the agent's own wording, with the centre's name.
+
+**Knowledge (Phase 4, same PR).** The Knowledge page has Cars we service,
+Services and packages, Offers (with an optional end date), and Centre
+essentials.
+
+*How the agent always has the latest version:* there is no update step. It
+reads `knowledge_bank` on every turn:
+1. A shortlist for this utterance (`TableKnowledgeBank.shortlist`): every
+   essentials entry plus the top 6 FTS5 matches.
+2. The search index is `knowledge_fts`, an external-content FTS5 table kept in
+   step by INSERT/UPDATE/DELETE triggers. So an edit is indexed in the same
+   transaction that saved it.
+3. Expiry is a `WHERE` at read time, so an offer stops being mentioned the day
+   after `valid_until` with nobody touching it.
+4. The shortlist goes to the classifier as the `kb_key` enum, with titles and
+   the customers' own phrases. That keeps it one model call per turn.
+5. `answerFor(key, today)` reads the answer when it is spoken.
+
+Tests prove that an entry added, edited or removed during a live call
+changes the very next turn.
+
+*Other rules:*
+- **A miss no longer ends the call.** `passOn()` files one customer-care
+  follow-up per call (later misses are appended to it) and texts the team's
+  number, and the booking carries on (template `KB_PASSED`).
+- **Centre essentials is one form** (`centre_profile`). Saving it rewrites the
+  essentials answers and the `centres` row, so the name, the SMS desk number
+  and the hours change together.
+- **Test a question** (`POST /api/knowledge/ask`) runs `answerQuestion()`, the
+  same shortlist and classifier a call uses.
+- The old `/api/kb/:key` routes still work.
+- Files: `src/kb/index.ts`, `src/kb/knowledge.ts`, `src/dealer/knowledge.ts`,
+  `src/web/dealer/views/Knowledge.tsx`, `tests/knowledge.test.ts`.
+- The migrated live centre keeps its six answers until someone saves the
+  essentials form; until then, the form shows a draft and says so.
 
 **New env:** `SESSION_SECRET` (optional; else generated once and kept in
 `accounts.db`), `ORG_DAILY_TURNS`, `DEFAULT_ORG`, `DATA_DIR`.

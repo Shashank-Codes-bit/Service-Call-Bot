@@ -126,7 +126,9 @@ export async function handleTurn(
     utterance,
     today: callDate,
     vehicles: d.vehicles?.map((v) => ({ model: v.model, last4: v.registration.slice(-4) })),
-    kbKeys: kb.entries().map((e) => e.key),
+    // A shortlist read from the table this turn — so whatever the centre
+    // saved on the Knowledge page a moment ago is already in it.
+    kbTopics: kb.shortlist(utterance, callDate),
     // B3: strip what we already hold before the words leave the process.
     redact: [d.customerName, d.registration, d.model, d.callerNumber].filter(Boolean) as string[],
   };
@@ -159,10 +161,13 @@ export async function handleTurn(
   }
   if (cls.outOfBand === 'general') {
     // The classifier chose from the dealer's own published topics, or said
-    // none. D10: no match means no answer and the call ends — never a
-    // near-enough row.
-    const answer = cls.kbKey ? kb.answerFor(cls.kbKey) : undefined;
-    if (!answer) return routeOut(ctx, 'another_problem', T.pick(T.KB_MISS, seed));
+    // none. D10: no match means no answer — never a near-enough row. The
+    // question goes to the team and the call carries on with the booking.
+    const answer = cls.kbKey ? kb.answerFor(cls.kbKey, callDate) : undefined;
+    if (!answer) {
+      passOn(ctx, cls.generalQuestion ?? utterance);
+      return answerAndResume(ctx, T.pick(T.KB_PASSED, seed));
+    }
     return answerAndResume(ctx, answer);
   }
   if (cls.intent === 'another_problem') {
@@ -371,6 +376,69 @@ function answerAndResume(ctx: Ctx, answer: string): TurnResult {
   // The classifier-failure path passes no answer, which would otherwise leave
   // a leading space for the voice layer to read.
   return say(ctx, ctx.session.state, `${answer} ${resume.text}`.trim(), { digits: resume.digits });
+}
+
+/**
+ * A question the bank could not answer: a customer-care follow-up with the
+ * caller's own words, and the team's number by SMS — without ending the call.
+ * One follow-up per call; a second unanswered question is added to it.
+ */
+function passOn(ctx: Ctx, question: string): void {
+  const d = ctx.session.data;
+  if (d.passedLeadId) {
+    ctx.db
+      .prepare(
+        `UPDATE leads SET caller_words = COALESCE(caller_words || ' / ', '') || ? WHERE id = ? AND status = 'open'`,
+      )
+      .run(question, d.passedLeadId);
+    return;
+  }
+  d.passedLeadId = insertLead(
+    ctx.db,
+    buildLead(
+      'another_problem',
+      {
+        mobileNumber: d.callerNumber,
+        customerId: d.customerId ?? null,
+        vehicleRegistration: d.registration ?? null,
+        vehicleModel: d.model ?? null,
+        callerWords: question,
+        sessionId: ctx.session.id,
+      },
+      ctx.now,
+    ),
+  );
+  smsForLead(ctx.db, { leadId: d.passedLeadId, mobile: d.callerNumber, centre: ctx.centre, now: ctx.now });
+}
+
+export type KbAnswer =
+  | { kind: 'answer'; key: string; title: string; answer: string; shortlisted: string[] }
+  | { kind: 'passed'; shortlisted: string[] }
+  | { kind: 'cost' | 'not_a_question'; shortlisted: string[] };
+
+/**
+ * What the agent would say to a question about the centre — the same
+ * shortlist, the same classifiers and the same lookup a call uses, so the
+ * Knowledge page's test panel shows the truth rather than an imitation.
+ */
+export async function answerQuestion(
+  db: Database,
+  deps: CallDeps,
+  question: string,
+  day: string,
+): Promise<KbAnswer> {
+  const kb = deps.kb ?? new TableKnowledgeBank(db);
+  const topics = kb.shortlist(question, day);
+  const shortlisted = topics.map((t) => t.title);
+  const request = { state: 'open_turn' as const, utterance: question, today: day, kbTopics: topics };
+  const quick = deps.fast ? await deps.fast.classify(request) : undefined;
+  const cls = quick?.confident ? quick : await deps.classifier.classify(request);
+  if (cls.outOfBand === 'cost') return { kind: 'cost', shortlisted };
+  if (cls.outOfBand !== 'general') return { kind: 'not_a_question', shortlisted };
+  const answer = cls.kbKey ? kb.answerFor(cls.kbKey, day) : undefined;
+  if (!answer || !cls.kbKey) return { kind: 'passed', shortlisted };
+  const title = topics.find((t) => t.key === cls.kbKey)?.title ?? cls.kbKey;
+  return { kind: 'answer', key: cls.kbKey, title, answer, shortlisted };
 }
 
 /** Every routed exit: lead, SMS, end. One path, so none can skip a step (F2). */

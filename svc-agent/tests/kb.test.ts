@@ -69,9 +69,11 @@ describe('the knowledge bank comes from the data, not from code', () => {
   it('stops answering a row that was deleted', async () => {
     expect(deleteEntry(db, 'parking')).toBe(true);
     const turns = await call('9810011001', ['Yes.', 'Nexon service Friday.', 'is there parking?']);
-    // Nothing matches now, so D10 applies: end the call rather than guess.
-    expect(turns.at(-1)!.ended).toBe(true);
-    expect(turns.at(-1)!.leadReason).toBe('another_problem');
+    // Nothing matches now, so D10 applies: no answer, the question goes to
+    // the team, and the booking carries on.
+    expect(turns.at(-1)!.reply).not.toMatch(/left of the service entrance/);
+    expect(turns.at(-1)!.reply).toMatch(/passed/);
+    expect(turns.at(-1)!.ended).toBe(false);
   });
 
   it('returns to the question it was asking', async () => {
@@ -81,19 +83,48 @@ describe('the knowledge bank comes from the data, not from code', () => {
   });
 });
 
-describe('D10 — never guess', () => {
+describe('D10 — never guess, and never drop the caller', () => {
   // A matcher that always returns its nearest option is the failure mode here:
   // ask about insurance and get told about parking. No match must mean no
-  // answer, and the call ends with a customer-care lead.
+  // answer: a customer-care follow-up with the caller's words, the team's
+  // number by SMS, and back to the booking.
+  const leads = () =>
+    db
+      .prepare(`SELECT reason, caller_words, session_id FROM leads WHERE created_at >= '2026-09-14' ORDER BY id`)
+      .all() as { reason: string; caller_words: string; session_id: string }[];
+
   it.each([
     'do you handle insurance claims?',
     'can I get finance on the repair?',
     'do you sell used cars?',
     'is the manager available?',
-  ])('ends the call on: %s', async (question) => {
+  ])('passes on, and carries on, for: %s', async (question) => {
+    const before = leads().length;
     const turns = await call('9810011001', ['Yes.', 'Nexon service Friday.', question]);
-    expect(turns.at(-1)!.ended).toBe(true);
-    expect(turns.at(-1)!.leadReason).toBe('another_problem');
+    const last = turns.at(-1)!;
+    expect(last.ended).toBe(false);
+    expect(last.state).toBe('complaint');
+    expect(last.reply).toMatch(/passed/);
+    const added = leads().slice(before);
+    expect(added).toHaveLength(1);
+    expect(added[0]).toMatchObject({ reason: 'another_problem', caller_words: question, session_id: turns[0]!.sessionId });
+  });
+
+  it('books after a question it could not answer, with one follow-up for two such questions', async () => {
+    const before = leads().length;
+    const turns = await call('9810011001', [
+      'Yes.',
+      'Nexon service Friday.',
+      'do you handle insurance claims?',
+      'is the manager available?',
+      "No, it's fine.",
+      'No.',
+      'Morning.',
+    ]);
+    expect(turns.at(-1)!.bookingReference).toMatch(/^\d{6}-\d{5}$/);
+    const added = leads().slice(before);
+    expect(added).toHaveLength(1);
+    expect(added[0]!.caller_words).toBe('do you handle insurance claims? / is the manager available?');
   });
 
   it('matches nothing when nothing is close', () => {

@@ -13,6 +13,7 @@ import { nextBookingReference } from '../shared/bookings.ts';
 import { SampleFleet, at, type SampleBooking } from './sample.ts';
 import type { Pool } from '../shared/types.ts';
 import { GREETING, fill, spokenNumber } from '../call/templates.ts';
+import { createKnowledge, saveEssentials } from '../kb/knowledge.ts';
 
 const BOOKING_WINDOW_DAYS = 30; // D5: latest bookable day is 30 days ahead.
 
@@ -779,23 +780,94 @@ const writeAll = db.transaction(() => {
 writeAll();
 
 // ---------------------------------------------------------------------------
-// Knowledge bank — per-dealer org facts only, no customer data (D10).
-// A question the bank cannot answer ends the call; it never guesses.
+// Knowledge — per-dealer org facts only, no customer data (D10). The
+// essentials come from the Centre essentials form, exactly as a centre's own
+// save writes them; the cars, services and offers are what a centre adds on
+// the Knowledge page. A question nothing here answers goes to the team.
 // ---------------------------------------------------------------------------
 
-const kb: Array<[string, string]> = [
-  ['opening_hours', 'The workshop is open every day, 9 in the morning to 7 in the evening.'],
-  ['location', "We're in Sector 44, just behind the HUDA City Centre metro station."],
-  ['parking', "There's customer parking on site, to the left of the service entrance."],
-  ['waiting_area', "There's a waiting lounge upstairs with tea, coffee and wifi."],
-  ['pickup_drop', 'Pickup and drop is available within a 10 kilometre radius, at a charge.'],
-  ['payment_methods', 'Cards, UPI and cash are all accepted at the counter.'],
-];
-
-const insertKb = db.prepare(
-  `INSERT INTO knowledge_bank (centre_id, question_key, answer_text) VALUES (1, ?, ?)`,
+saveEssentials(
+  db,
+  {
+    name: centres[0]!.name,
+    address: 'Sector 44, Gurugram',
+    landmark: 'just behind the HUDA City Centre metro station',
+    days: 'Every day',
+    opens: '09:00',
+    closes: '19:00',
+    desk: centres[0]!.landline,
+    parking: "There's customer parking on site, to the left of the service entrance.",
+    waiting: "There's a waiting lounge upstairs with tea, coffee and wifi.",
+    payment: ['Cards', 'UPI', 'Cash'],
+    pickup: true,
+    pickupTerms: 'within a 10 kilometre radius, at a charge',
+    services: ['Periodic service', 'Running repairs', 'AC service', 'Wheel alignment', 'Car wash'],
+    languages: ['English'],
+  },
+  now,
 );
-for (const [key, answer] of kb) insertKb.run(key, answer);
+
+const knowledge: Array<{ category: 'cars' | 'services' | 'offers'; title: string; answer: string; phrases: string[]; validUntil?: IsoDate; daysAgo: number }> = [
+  {
+    category: 'cars',
+    title: 'Tata Curvv EV',
+    answer: 'Yes, we service the Curvv EV. The first service is at 15,000 kilometres or 12 months, whichever comes first, and every service includes a battery health check.',
+    phrases: ['curvv', 'curvv ev', 'electric', 'ev service', 'battery check'],
+    daysAgo: 1,
+  },
+  {
+    category: 'cars',
+    title: 'Mahindra XUV 3XO',
+    answer: 'Yes, we service the XUV 3XO. Its first paid service is at 10,000 kilometres, and a periodic service takes about five hours.',
+    phrases: ['xuv 3xo', '3xo', 'xuv', 'mahindra'],
+    daysAgo: 5,
+  },
+  {
+    category: 'services',
+    title: 'AC service',
+    answer: 'AC service includes a gas top-up check, filter clean and cooling test. It takes about two hours if you drop the car in the morning.',
+    phrases: ['ac gas', 'ac not cooling', 'ac refill', 'air conditioning', 'cooling'],
+    daysAgo: 13,
+  },
+  {
+    category: 'services',
+    title: 'Wheel alignment',
+    answer: 'Wheel alignment and balancing takes about 45 minutes and can be added to any service.',
+    phrases: ['alignment', 'balancing', 'pulling', 'wheel balancing'],
+    daysAgo: 13,
+  },
+  {
+    category: 'services',
+    title: 'Extended warranty',
+    answer: 'Extended warranty can be bought until the car is three years old. The service advisor will give you the price at drop-off.',
+    phrases: ['warranty', 'extend warranty', 'extended warranty'],
+    daysAgo: 19,
+  },
+  {
+    category: 'offers',
+    title: 'Monsoon check-up ₹499',
+    answer: "This month there's a monsoon check-up for 499 rupees: wipers, brakes, lights and underbody, done in about an hour.",
+    phrases: ['monsoon', 'check-up', 'checkup', 'offer', 'discount'],
+    validUntil: addDays(TODAY, 28),
+    daysAgo: 2,
+  },
+  {
+    // Ended: shown on the Knowledge page as expired, never spoken.
+    category: 'offers',
+    title: 'Independence Day free wash',
+    answer: 'Free car wash with every paid service.',
+    phrases: ['free wash', 'wash offer'],
+    validUntil: addDays(TODAY, -40),
+    daysAgo: 60,
+  },
+];
+for (const k of knowledge) {
+  createKnowledge(
+    db,
+    { category: k.category, title: k.title, answer: k.answer, phrases: k.phrases, validUntil: k.validUntil ?? null },
+    at(addDays(TODAY, -k.daysAgo), '11:00'),
+  );
+}
 
 // ---------------------------------------------------------------------------
 

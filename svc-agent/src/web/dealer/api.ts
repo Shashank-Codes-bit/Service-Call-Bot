@@ -163,6 +163,53 @@ export type Summary = {
   counts: { customers: number; vehicles: number; openBookings: number; leads: number };
 };
 
+export type KbCategory = 'cars' | 'services' | 'offers' | 'essentials';
+export type KnowledgeEntry = {
+  id: number;
+  key: string;
+  category: KbCategory;
+  title: string;
+  answer: string;
+  phrases: string[];
+  valid_until: string | null;
+  updated_at: string | null;
+  expired: boolean;
+};
+export type Essentials = {
+  name: string;
+  address: string;
+  landmark: string;
+  days: string;
+  opens: string;
+  closes: string;
+  desk: string;
+  parking: string;
+  waiting: string;
+  payment: string[];
+  pickup: boolean;
+  pickupTerms: string;
+  services: string[];
+  languages: string[];
+};
+export type KnowledgeView = {
+  today: string;
+  entries: KnowledgeEntry[];
+  essentials: Essentials;
+  saved: boolean;
+  updated_at: string | null;
+  options: { payment: string[]; services: string[]; languages: string[] };
+};
+export type KnowledgeInput = {
+  category: KbCategory;
+  title: string;
+  answer: string;
+  phrases: string;
+  validUntil: string | null;
+};
+export type AskResult =
+  | { kind: 'answer'; key: string; title: string; answer: string; shortlisted: string[] }
+  | { kind: 'passed' | 'cost' | 'not_a_question'; shortlisted: string[] };
+
 /** One turn of the conversation — the same contract a voice layer receives. */
 export type ChatReply = {
   sessionId: string;
@@ -258,6 +305,13 @@ export const api = {
 
   master: () => request<Master>('/api/capacity/master'),
   saveMaster: (m: Master) => request<{ ok: true; master: Master; applied: Applied }>('/api/capacity/master', json('PUT', m)),
+
+  knowledge: () => request<KnowledgeView>('/api/knowledge'),
+  addKnowledge: (k: KnowledgeInput) => request<{ ok: true; id: number }>('/api/knowledge', json('POST', k)),
+  editKnowledge: (id: number, k: KnowledgeInput) => request<{ ok: true }>(`/api/knowledge/${id}`, json('PUT', k)),
+  removeKnowledge: (id: number) => request<{ ok: true }>(`/api/knowledge/${id}`, { method: 'DELETE' }),
+  saveEssentials: (e: Essentials) => request<{ ok: true }>('/api/knowledge/essentials', json('PUT', e)),
+  ask: (question: string) => request<AskResult>('/api/knowledge/ask', json('POST', { question })),
 
   chatStart: (callerNumber: string) => request<ChatReply>('/api/chat/start', json('POST', { callerNumber })),
   chatTurn: (sessionId: string, utterance: string) =>

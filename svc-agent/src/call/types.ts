@@ -72,6 +72,11 @@ export type SessionData = {
   sameDayNudgeDeclined?: boolean;
   /** Quoted into any lead this call produces (F2). */
   lastCallerWords?: string;
+  /**
+   * The follow-up a question the bank couldn't answer went into. A second
+   * such question in the same call joins it, rather than filing another.
+   */
+  passedLeadId?: number;
   /** Set when the call ended by routing out. */
   leadReason?: LeadReason;
   bookingReference?: string;

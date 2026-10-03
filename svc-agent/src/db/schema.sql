@@ -15,6 +15,9 @@ DROP TABLE IF EXISTS booking_counter;
 DROP TABLE IF EXISTS bookings;
 DROP TABLE IF EXISTS slot_capacity;
 DROP TABLE IF EXISTS capacity_master;
+-- The knowledge search index and the essentials form (both made by migrate.ts).
+DROP TABLE IF EXISTS knowledge_fts;
+DROP TABLE IF EXISTS centre_profile;
 DROP TABLE IF EXISTS knowledge_bank;
 DROP TABLE IF EXISTS service_due;
 DROP TABLE IF EXISTS vehicles;
@@ -67,11 +70,22 @@ CREATE TABLE service_due (
   due_date       TEXT
 );
 
+-- What the agent can answer about the centre (D10), written by the centre on
+-- the Knowledge page. Searched through knowledge_fts, which triggers keep in
+-- step with every write (migrate.ts) — there is no separate index to rebuild.
 CREATE TABLE knowledge_bank (
   id           INTEGER PRIMARY KEY,
   centre_id    INTEGER NOT NULL REFERENCES centres(id),
   question_key TEXT NOT NULL,
   answer_text  TEXT NOT NULL,
+  category     TEXT NOT NULL DEFAULT 'essentials'
+               CHECK (category IN ('cars', 'services', 'offers', 'essentials')),
+  title        TEXT,
+  -- Words customers use, comma-separated. Searched, never spoken.
+  phrases      TEXT,
+  -- An offer stops being answered after this day, with nobody touching it.
+  valid_until  TEXT,
+  updated_at   TEXT,
   UNIQUE (centre_id, question_key)
 );
 

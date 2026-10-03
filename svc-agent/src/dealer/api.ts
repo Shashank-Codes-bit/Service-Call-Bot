@@ -44,6 +44,10 @@ import {
 import { AUDIENCES, isAudience, LEAD_REPORTS, BOOKING_REPORTS, runReport } from './reports.ts';
 import { deleteEntry, TableKnowledgeBank, upsertEntry } from '../kb/index.ts';
 import { readTranscript } from '../call/session.ts';
+import type { CallDeps } from '../call/machine.ts';
+import { StubClassifier } from '../call/classifier.ts';
+import { LocalCrm } from '../call/crm.ts';
+import { knowledgeApi } from './knowledge.ts';
 
 const isPool = (v: unknown): v is Pool => POOLS.includes(v as Pool);
 const isDropSlot = (v: unknown): v is DropSlot => DROP_SLOTS.includes(v as DropSlot);
@@ -98,8 +102,15 @@ function blockerFor(
   return 'Free service lapsed (over 60 days). Offer it as a paid service.';
 }
 
-export function api(db: Database): Router {
+export function api(db: Database, opts: { deps?: CallDeps } = {}): Router {
   const r = Router();
+
+  // The Knowledge page, and its test panel asking through this centre's own
+  // classifier. Mounted bare (tests), it asks the offline one.
+  r.use(
+    '/knowledge',
+    knowledgeApi(db, () => opts.deps ?? { classifier: new StubClassifier(), crm: new LocalCrm(db) }),
+  );
 
   // -------------------------------------------------------------------------
   // Capacity — ours, and the dealer's only bay-management system (D4).

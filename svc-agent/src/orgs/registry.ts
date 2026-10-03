@@ -44,7 +44,7 @@ export class Registry {
       slug,
       db,
       deps,
-      api: api(db),
+      api: api(db, { deps }),
       call: callApi(db, deps),
       vapi: vapiApi(db, deps),
     };

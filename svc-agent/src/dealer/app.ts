@@ -50,13 +50,18 @@ export function buildApp({
     res.setHeader('set-cookie', sessionCookie(value, SESSION_HOURS * 3600));
   }
 
-  const me = (org: Org) => ({
-    slug: org.slug,
-    name: org.name,
-    userId: org.user_id,
-    initials: initials(org.name),
-    today: today(),
-  });
+  /** The name the centre gave itself in Centre essentials, which can change after sign-up. */
+  const nameOf = (org: Org): string => {
+    const row = registry.get(org.slug)?.db.prepare(`SELECT name FROM centres WHERE id = 1`).get() as
+      | { name: string }
+      | undefined;
+    return row?.name || org.name;
+  };
+
+  const me = (org: Org) => {
+    const name = nameOf(org);
+    return { slug: org.slug, name, userId: org.user_id, initials: initials(name), today: today() };
+  };
 
   auth.post('/login', rateLimit({ max: 10 }), (req, res) => {
     const org = accounts.verify(String(req.body?.userId ?? ''), String(req.body?.password ?? ''));
