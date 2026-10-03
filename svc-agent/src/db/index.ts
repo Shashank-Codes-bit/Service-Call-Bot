@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from '../config.ts';
+import { migrate } from './migrate.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -29,4 +30,7 @@ export function open(path: string = DB_PATH): Database.Database {
  */
 export function resetSchema(db: Database.Database): void {
   db.exec(readFileSync(join(here, 'schema.sql'), 'utf8'));
+  // The parts defined once, in migrate.ts: the knowledge search index and its
+  // triggers, and the essentials form's table.
+  migrate(db);
 }

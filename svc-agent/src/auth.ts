@@ -1,13 +1,13 @@
-import { timingSafeEqual } from 'node:crypto';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
 import { config } from './config.ts';
+import type { Accounts, Org } from './orgs/accounts.ts';
 
 /**
- * Two guards, one rule: unset means refuse. "No password configured, so skip
- * the check" is frictionless locally and ships the app wide open the first
- * time someone forgets a secret; this fails closed and says so.
- *
- * Reads are unguarded on purpose — the portal link is meant to be shareable.
+ * Two kinds of door. The portal: a centre signs in once and holds a cookie for
+ * the working day. The call endpoints: a shared secret, for the voice
+ * provider. Both fail closed — an unset secret refuses, it never waves
+ * requests through.
  */
 
 /** Constant-time, so a wrong secret leaks nothing through response timing. */
@@ -46,9 +46,6 @@ function guard(secret: () => string, name: string) {
   };
 }
 
-/** Portal writes — capacity edits, regeneration, taking a slot. */
-export const requireAdmin = guard(() => config.adminPassword, 'ADMIN_PASSWORD');
-
 /** The call endpoints and the Vapi webhook. */
 export const requireCallSecret = guard(() => config.callApiSecret, 'CALL_API_SECRET');
 
@@ -81,5 +78,83 @@ export function rateLimit({ windowMs = 60_000, max = 60 } = {}) {
     if (hits.size > 5_000) {
       for (const [k, v] of hits) if (now > v.resetAt) hits.delete(k);
     }
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Portal sessions
+// ---------------------------------------------------------------------------
+
+export const SESSION_COOKIE = 'sid';
+export const SESSION_HOURS = 12;
+
+/**
+ * `<slug>.<expires-ms>.<mac>`. The MAC covers the centre's password hash, so
+ * changing the password signs every device out with no session table to clear.
+ */
+function mac(secret: string, slug: string, expires: number, pwHash: string): string {
+  return createHmac('sha256', secret).update(`${slug}|${expires}|${pwHash}`).digest('base64url');
+}
+
+export function signSession(org: Org, secret: string, now = Date.now()): { value: string; expires: number } {
+  const expires = now + SESSION_HOURS * 3_600_000;
+  return { value: `${org.slug}.${expires}.${mac(secret, org.slug, expires, org.pw_hash)}`, expires };
+}
+
+export function readSession(
+  value: string,
+  accounts: Accounts,
+  secret: string,
+  now = Date.now(),
+): Org | undefined {
+  const [slug, exp, sig] = value.split('.');
+  const expires = Number(exp);
+  if (!slug || !sig || !Number.isFinite(expires) || expires <= now) return undefined;
+  const org = accounts.get(slug);
+  if (!org) return undefined;
+  return matches(sig, mac(secret, slug, expires, org.pw_hash)) ? org : undefined;
+}
+
+/** One cookie by name, without a parser dependency for the one we use. */
+export function cookie(req: Request, name: string): string {
+  for (const part of (req.get('cookie') ?? '').split(';')) {
+    const i = part.indexOf('=');
+    if (i > 0 && part.slice(0, i).trim() === name) {
+      return decodeURIComponent(part.slice(i + 1).trim());
+    }
+  }
+  return '';
+}
+
+export function sessionCookie(value: string, maxAgeSeconds: number): string {
+  return [
+    `${SESSION_COOKIE}=${value}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Strict',
+    `Max-Age=${maxAgeSeconds}`,
+    ...(config.behindProxy ? ['Secure'] : []),
+  ].join('; ');
+}
+
+/**
+ * The portal's door: the session cookie, or `Authorization: Basic` with the
+ * centre's user ID and password for scripts. Sets `res.locals.org`.
+ */
+export function requireOrg(accounts: Accounts, secret: () => string) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    let org = readSession(cookie(req, SESSION_COOKIE), accounts, secret());
+    const header = req.get('authorization') ?? '';
+    if (!org && header.toLowerCase().startsWith('basic ')) {
+      const decoded = Buffer.from(header.slice(6).trim(), 'base64').toString('utf8');
+      const i = decoded.indexOf(':');
+      if (i > 0) org = accounts.verify(decoded.slice(0, i), decoded.slice(i + 1));
+    }
+    if (!org) {
+      res.status(401).json({ error: 'Please sign in', kind: 'unauthorised' });
+      return;
+    }
+    res.locals['org'] = org;
+    next();
   };
 }

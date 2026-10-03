@@ -1,6 +1,7 @@
 import { addDays, parseIsoDate, WEEKDAY_NAMES, type IsoDate } from '../shared/dates.ts';
 import type { DropSlot } from '../shared/types.ts';
 import type { CallState } from './types.ts';
+import type { KbTopic } from '../kb/index.ts';
 
 /**
  * The one place the LLM is touched (F5, B2). It answers "what did they say",
@@ -17,11 +18,13 @@ export type ClassifyRequest = {
   /** Closed candidate sets — the LLM matches against these, never invents. */
   vehicles?: { model: string; last4: string }[];
   /**
-   * The dealer's knowledge-bank keys, as a closed set, so the model can only
-   * pick a topic the dealer has written an answer for. Carried in the same
-   * call, so a general question costs no extra round trip (G7).
+   * The dealer's knowledge, as a closed set, so the model can only pick a
+   * topic the dealer has written an answer for. A shortlist for this
+   * utterance (kb/index.ts), not the whole bank, so it stays small however
+   * much the centre adds. Carried in the same call, so a general question
+   * costs no extra round trip (G7).
    */
-  kbKeys?: string[];
+  kbTopics?: KbTopic[];
   /**
    * Stripped before the utterance leaves our process (B3, amended): name,
    * mobile, registration, model — all things we already hold, which is what
@@ -130,17 +133,34 @@ function sharedPrefix(a: string, b: string): number {
   return i;
 }
 
+/** Too general to say which topic a question is about: "do you service my car". */
+const GENERIC = new Set(['service', 'services', 'servicing', 'car', 'cars', 'offer', 'offers', 'check', 'free', 'new']);
+
+/** A customer phrase is in the question when each of its words is. Short words must match exactly. */
+function phraseIn(phrase: string, tokens: string[]): boolean {
+  const words = phrase.split(/[^a-z0-9]+/).filter(Boolean);
+  return (
+    words.length > 0 &&
+    words.every((p) => tokens.some((w) => (p.length < 4 || w.length < 4 ? w === p : sharedPrefix(w, p) >= 4)))
+  );
+}
+
 /**
- * Crude word-overlap against the dealer's own keys — good enough to develop
- * against, and it must still return nothing when nothing matches. D10 is a
- * rule, not a quality setting.
+ * Crude word-overlap against the dealer's own topics — the customers' own
+ * words first, then the title or key — good enough to develop against, and
+ * it must still return nothing when nothing matches. D10 is a rule, not a
+ * quality setting.
  */
-export function matchKbKey(utterance: string, keys: string[] = []): string | undefined {
+export function matchKbKey(utterance: string, topics: Array<string | KbTopic> = []): string | undefined {
   const text = utterance.toLowerCase();
+  const tokens = text.split(/[^a-z0-9]+/).filter((w) => w && !STOPWORDS.has(w));
   let best: { key: string; score: number } | undefined;
-  for (const key of keys) {
-    let score = 0;
-    for (const word of key.toLowerCase().split(/[_\s-]+/).filter((w) => w.length > 2)) {
+  for (const t of topics) {
+    const topic = typeof t === 'string' ? { key: t, title: '', phrases: [] } : t;
+    const key = topic.key;
+    let score = 3 * topic.phrases.filter((p) => phraseIn(p, tokens)).length;
+    const named = `${key} ${topic.title}`.toLowerCase().split(/[_\s-]+/);
+    for (const word of [...new Set(named)].filter((w) => w.length > 2 && !GENERIC.has(w))) {
       // Either word may be the longer form, so four shared characters either
       // way — enough for "pay"/"payment", not enough for "car"/"card".
       const hit = text
@@ -177,7 +197,7 @@ export class StubClassifier implements Classifier {
       out.generalQuestion = req.utterance.trim();
       // Undefined when nothing matches, so the machine ends the call rather
       // than answering with whatever was nearest (D10).
-      out.kbKey = matchKbKey(t, req.kbKeys);
+      out.kbKey = matchKbKey(t, req.kbTopics);
       return out;
     }
 

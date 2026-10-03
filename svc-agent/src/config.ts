@@ -30,8 +30,31 @@ export const config = {
    *  tree would make every deploy ship a fresh, empty database. */
   dbPath: str('DB_PATH', join(here, '..', 'service.db')),
 
-  /** Portal writes: save capacity, regenerate, take a slot. Reads stay open. */
+  /**
+   * Where the centres live: `accounts.db` and `orgs/<slug>.db`. Beside the old
+   * single database by default, so the volume that held it holds these too.
+   */
+  get dataDir(): string {
+    return str('DATA_DIR') || dirname(this.dbPath);
+  },
+
+  /**
+   * The password the first centre signs in with. Read once, at the first boot
+   * after the move to separate centres; after that the hash in accounts.db is
+   * what counts, and changing this does nothing.
+   */
   adminPassword: str('ADMIN_PASSWORD'),
+
+  /** The slug of the first centre, made from the old single database. Also
+   *  where the voice endpoints go when a request names no centre. */
+  defaultOrg: str('DEFAULT_ORG', 'voltas'),
+
+  /** Signs the portal's session cookie. Unset, one is generated once and kept
+   *  in accounts.db, so restarts don't sign everyone out. */
+  sessionSecret: str('SESSION_SECRET'),
+
+  /** Conversation turns a centre gets per day — every turn can cost a model call. */
+  orgDailyTurns: Number(str('ORG_DAILY_TURNS', '300')),
 
   /** The call endpoints and the Vapi webhook. */
   callApiSecret: str('CALL_API_SECRET'),
@@ -61,7 +84,7 @@ export const config = {
    * where honouring that header would let a client choose its own address.
    */
   behindProxy: str('BEHIND_PROXY') === 'true',
-} as const;
+};
 
 // Node re-reads TZ when it is assigned, so this pins every Date in the process
 // to the centre's clock whatever the host is set to.
@@ -77,7 +100,6 @@ export const hasApiKey = (): boolean => Boolean(config.anthropicApiKey);
  */
 export function configWarnings(): string[] {
   const out: string[] = [];
-  if (!config.adminPassword) out.push('ADMIN_PASSWORD unset — portal writes will be refused');
   if (!config.callApiSecret) out.push('CALL_API_SECRET unset — call endpoints will be refused');
   if (!config.anthropicApiKey) out.push('CLAUDE_API_KEY unset — falling back to the stub classifier');
   return out;

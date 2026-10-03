@@ -10,7 +10,6 @@ import { seed } from '../src/db/seed.ts';
 import { api } from '../src/dealer/api.ts';
 import { createSession } from '../src/call/session.ts';
 import { addDays, today } from '../src/shared/dates.ts';
-import { config } from '../src/config.ts';
 
 /**
  * The HTTP surface, over a real seeded database.
@@ -26,11 +25,9 @@ const NOW = new Date();
 const TODAY = today(NOW);
 
 /**
- * Writes are guarded now (reads are not — the portal link is shareable), so
- * every mutating call here carries the password. The guard itself is tested in
- * http.test.ts; these tests are about what the endpoints do once past it.
+ * The router itself carries no password: the centre's sign-in in front of it
+ * is the door (accounts.test.ts). These tests are about what it does inside.
  */
-const ADMIN = config.adminPassword || 'test-admin';
 
 let scratch: string;
 let db: Database;
@@ -52,10 +49,6 @@ const freeSlot = (date: string, pool: string, dropSlot: string) =>
   ).free;
 
 beforeEach(() => {
-  // The guard reads config at request time, so a checkout with no .env still
-  // gets past it.
-  vi.spyOn(config, 'adminPassword', 'get' as never).mockReturnValue(ADMIN as never);
-
   scratch = mkdtempSync(join(tmpdir(), 'svc-api-'));
   seed({ now: NOW, dbPath: join(scratch, 'test.db') });
   db = open(join(scratch, 'test.db'));
@@ -100,7 +93,7 @@ describe('capacity master', () => {
     const master = (await request(app).get('/api/capacity/master')).body;
     master[String(weekday)].major.morning = before + 5;
 
-    await request(app).put('/api/capacity/master').set('x-admin-password', ADMIN).send(master).expect(200);
+    await request(app).put('/api/capacity/master').send(master).expect(200);
 
     expect(freeSlot(tomorrow, 'major', 'morning')).toBe(before + 5);
   });
@@ -112,14 +105,14 @@ describe('capacity master', () => {
     // Sell two slots, then try to cut the weekday to zero.
     for (const reg of ['HR26AB4471', 'MH12PQ3344']) {
       await request(app)
-        .post('/api/bookings').set('x-admin-password', ADMIN)
+        .post('/api/bookings')
         .send({ vehicleId: vehicleId(reg), pool: 'major', bookingDate: tomorrow, dropSlot: 'morning' })
         .expect(201);
     }
 
     const master = (await request(app).get('/api/capacity/master')).body;
     master[String(weekday)].major.morning = 0;
-    const res = await request(app).put('/api/capacity/master').set('x-admin-password', ADMIN).send(master).expect(200);
+    const res = await request(app).put('/api/capacity/master').send(master).expect(200);
 
     const conflict = res.body.applied.conflicts.find(
       (c: { date: string; pool: string; dropSlot: string }) =>
@@ -133,27 +126,27 @@ describe('capacity master', () => {
   it('rejects a negative figure with 400 and writes nothing', async () => {
     const master = (await request(app).get('/api/capacity/master')).body;
     master['1'].minor.morning = -1;
-    await request(app).put('/api/capacity/master').set('x-admin-password', ADMIN).send(master).expect(400);
+    await request(app).put('/api/capacity/master').send(master).expect(400);
     expect((await request(app).get('/api/capacity/master')).body['1'].minor.morning).toBe(6);
   });
 
   it('rejects a non-integer figure with 400', async () => {
     const master = (await request(app).get('/api/capacity/master')).body;
     master['1'].minor.morning = 2.5;
-    await request(app).put('/api/capacity/master').set('x-admin-password', ADMIN).send(master).expect(400);
+    await request(app).put('/api/capacity/master').send(master).expect(400);
   });
 
   it('rejects a malformed body with 400 rather than a 500', async () => {
-    await request(app).put('/api/capacity/master').set('x-admin-password', ADMIN).send({ nonsense: true }).expect(400);
+    await request(app).put('/api/capacity/master').send({ nonsense: true }).expect(400);
   });
 });
 
 describe('POST /api/capacity/regenerate', () => {
   it('reports the window it rebuilt and is idempotent', async () => {
-    const first = await request(app).post('/api/capacity/regenerate').set('x-admin-password', ADMIN).expect(200);
+    const first = await request(app).post('/api/capacity/regenerate').expect(200);
     expect(first.body).toMatchObject({ from: TODAY, to: addDays(TODAY, 30) });
 
-    const second = await request(app).post('/api/capacity/regenerate').set('x-admin-password', ADMIN).expect(200);
+    const second = await request(app).post('/api/capacity/regenerate').expect(200);
     expect(second.body.created).toBe(0);
     expect(second.body.updated).toBe(0);
   });
@@ -190,7 +183,7 @@ describe('POST /api/bookings', () => {
   });
 
   it('creates a dealer booking and returns reference and EDD', async () => {
-    const res = await request(app).post('/api/bookings').set('x-admin-password', ADMIN).send(body()).expect(201);
+    const res = await request(app).post('/api/bookings').send(body()).expect(201);
     expect(res.body.reference).toMatch(/^\d{6}-\d{5}$/);
     // major + morning = same day (D7)
     expect(res.body.expectedPickup).toBe(addDays(TODAY, 7));
@@ -198,7 +191,7 @@ describe('POST /api/bookings', () => {
 
   it('books today — the dealer desk is not bound by the agent window', async () => {
     // D5 governs what the bot offers, not what the dealer may enter.
-    await request(app).post('/api/bookings').set('x-admin-password', ADMIN).send(body({ bookingDate: TODAY })).expect(201);
+    await request(app).post('/api/bookings').send(body({ bookingDate: TODAY })).expect(201);
   });
 
   it.each([
@@ -208,18 +201,18 @@ describe('POST /api/bookings', () => {
     ['bookingDate malformed', { bookingDate: '14/09/2026' }],
     ['dropSlot invalid', { dropSlot: 'evening' }],
   ])('400s on %s', async (_label, over) => {
-    await request(app).post('/api/bookings').set('x-admin-password', ADMIN).send(body(over)).expect(400);
+    await request(app).post('/api/bookings').send(body(over)).expect(400);
   });
 
   it('404s on a vehicle that does not exist, rather than a 500', async () => {
-    const res = await request(app).post('/api/bookings').set('x-admin-password', ADMIN).send(body({ vehicleId: 99999 })).expect(404);
+    const res = await request(app).post('/api/bookings').send(body({ vehicleId: 99999 })).expect(404);
     expect(res.body.kind).toBe('unknown_vehicle');
   });
 
   it('409s with slot_full when the slot has no room', async () => {
     const date = addDays(TODAY, 3); // the seeded "whole day gone" bend
     const res = await request(app)
-      .post('/api/bookings').set('x-admin-password', ADMIN)
+      .post('/api/bookings')
       .send(body({ bookingDate: date }))
       .expect(409);
     expect(res.body.kind).toBe('slot_full');
@@ -227,7 +220,7 @@ describe('POST /api/bookings', () => {
 
   it('409s with duplicate and names the existing reference', async () => {
     const res = await request(app)
-      .post('/api/bookings').set('x-admin-password', ADMIN)
+      .post('/api/bookings')
       .send(body({ vehicleId: vehicleId('GJ01TU2255'), pool: 'minor' }))
       .expect(409);
     expect(res.body.kind).toBe('duplicate');
@@ -238,10 +231,10 @@ describe('POST /api/bookings', () => {
     const date = addDays(TODAY, 7);
     const before = freeSlot(date, 'minor', 'morning');
     await request(app)
-      .post('/api/bookings').set('x-admin-password', ADMIN)
+      .post('/api/bookings')
       .send(body({ vehicleId: vehicleId('GJ01TU2255'), pool: 'minor', bookingDate: date }))
       .expect(409);
-    await request(app).post('/api/bookings').set('x-admin-password', ADMIN).send(body({ vehicleId: 99999 })).expect(404);
+    await request(app).post('/api/bookings').send(body({ vehicleId: 99999 })).expect(404);
     expect(freeSlot(date, 'minor', 'morning')).toBe(before);
   });
 });
@@ -251,14 +244,14 @@ describe('PATCH /api/bookings/:reference', () => {
     (
       await request(app)
         .post('/api/bookings')
-        .set('x-admin-password', ADMIN)
+        
         .send({ vehicleId: vehicleId('HR26AB4471'), pool: 'major', bookingDate: addDays(TODAY, 7), dropSlot: 'morning' })
         .expect(201)
     ).body.reference as string;
 
-  const close = (ref: string, status: unknown, password: string | null = ADMIN) => {
+  const close = (ref: string, status: unknown) => {
     const r = request(app).patch(`/api/bookings/${ref}`);
-    return (password ? r.set('x-admin-password', password) : r).send({ status });
+    return r.send({ status });
   };
 
   it('cancels, gives the slot back, and takes it off the arrivals list', async () => {
@@ -272,11 +265,6 @@ describe('PATCH /api/bookings/:reference', () => {
 
     const arr = await request(app).get(`/api/bookings/arrivals?date=${date}`).expect(200);
     expect(arr.body.rows.map((r: { booking_reference: string }) => r.booking_reference)).not.toContain(ref);
-  });
-
-  it('is a write, so it needs the password', async () => {
-    const ref = await create();
-    await close(ref, 'completed', null).expect(401);
   });
 
   it('answers 400 for a bad status, 404 for an unknown booking, 409 for a closed one', async () => {
@@ -383,8 +371,9 @@ describe('GET /api/reports', () => {
     for (const a of ['customer-care', 'retention', 'service-manager', 'crm-data', 'reception']) {
       total += (await request(app).get(`/api/reports/${a}?date=${TODAY}`)).body.rows.length;
     }
+    // Reports are per day, so: every lead raised today.
     expect(total).toBe(
-      (db.prepare(`SELECT COUNT(*) n FROM leads`).get() as { n: number }).n,
+      (db.prepare(`SELECT COUNT(*) n FROM leads WHERE created_at >= ?`).get(TODAY) as { n: number }).n,
     );
   });
 });
@@ -406,12 +395,21 @@ describe('GET /api/vehicles and /api/summary', () => {
     const res = await request(app).get('/api/summary').expect(200);
     expect(res.body.today).toBe(TODAY);
     expect(res.body.centre.name).toContain('Sector 44');
-    expect(res.body.counts).toMatchObject({ customers: 11, vehicles: 13, openBookings: 1, leads: 10 });
+    const n = (sql: string) => (db.prepare(sql).get() as { n: number }).n;
+    expect(res.body.counts).toEqual({
+      customers: n(`SELECT COUNT(*) n FROM customers`),
+      vehicles: n(`SELECT COUNT(*) n FROM vehicles`),
+      openBookings: n(`SELECT COUNT(*) n FROM bookings WHERE status = 'open'`),
+      leads: n(`SELECT COUNT(*) n FROM leads`),
+    });
+    // The scenario customers and the sample fleet both made it in.
+    expect(res.body.counts.customers).toBeGreaterThan(11);
   });
 
   it('counts move when a booking is made', async () => {
+    const before = (await request(app).get('/api/summary')).body.counts.openBookings as number;
     await request(app)
-      .post('/api/bookings').set('x-admin-password', ADMIN)
+      .post('/api/bookings')
       .send({
         vehicleId: vehicleId('HR26AB4471'),
         pool: 'major',
@@ -420,6 +418,6 @@ describe('GET /api/vehicles and /api/summary', () => {
       })
       .expect(201);
     const res = await request(app).get('/api/summary').expect(200);
-    expect(res.body.counts.openBookings).toBe(2);
+    expect(res.body.counts.openBookings).toBe(before + 1);
   });
 });

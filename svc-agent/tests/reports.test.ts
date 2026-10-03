@@ -6,6 +6,7 @@ import type { Database } from 'better-sqlite3';
 import { open } from '../src/db/index.ts';
 import { seed } from '../src/db/seed.ts';
 import { LEAD_REASONS } from '../src/shared/types.ts';
+import { addDays } from '../src/shared/dates.ts';
 import {
   AUDIENCES,
   auditReasonCoverage,
@@ -101,7 +102,10 @@ describe('report contents', () => {
     const total = (Object.keys(LEAD_REPORTS) as (keyof typeof LEAD_REPORTS)[])
       .map((a) => runReport(db, a, TODAY).rows.length)
       .reduce((a, b) => a + b, 0);
-    const seeded = (db.prepare(`SELECT COUNT(*) n FROM leads`).get() as { n: number }).n;
+    // Reports are per day: every lead raised today, each in exactly one report.
+    const seeded = (
+      db.prepare(`SELECT COUNT(*) n FROM leads WHERE created_at >= ?`).get(TODAY) as { n: number }
+    ).n;
     expect(total).toBe(seeded);
   });
 
@@ -111,19 +115,31 @@ describe('report contents', () => {
 });
 
 describe('booking reports', () => {
-  it('lists arrivals for the day the car turns up, not the day it was booked', () => {
-    const bookingDate = (
-      db.prepare(`SELECT booking_date AS d FROM bookings LIMIT 1`).get() as { d: string }
-    ).d;
-    expect(bookingDate).not.toBe(TODAY); // Meera's is five days out
+  const count = (sql: string, ...args: unknown[]) =>
+    (db.prepare(sql).get(...args) as { n: number }).n;
 
-    expect(runReport(db, 'bookings-arrivals', TODAY).rows).toHaveLength(0);
-    expect(runReport(db, 'bookings-arrivals', bookingDate).rows).toHaveLength(1);
+  it('lists arrivals for the day the car turns up, not the day it was booked', () => {
+    // Meera's was booked today for five days out: it arrives then, not now.
+    const meera = db
+      .prepare(
+        `SELECT b.booking_date AS d, b.created_at AS c FROM bookings b
+         JOIN vehicles v ON v.id = b.vehicle_id WHERE v.registration_number = 'GJ01TU2255'`,
+      )
+      .get() as { d: string; c: string };
+    expect(meera.c.slice(0, 10)).toBe(TODAY);
+    expect(meera.d).toBe(addDays(TODAY, 5));
+
+    const arriving = (d: string) =>
+      count(`SELECT COUNT(*) n FROM bookings WHERE booking_date = ? AND status = 'open'`, d);
+    expect(runReport(db, 'bookings-arrivals', TODAY).rows).toHaveLength(arriving(TODAY));
+    const plus5 = runReport(db, 'bookings-arrivals', meera.d).rows;
+    expect(plus5).toHaveLength(arriving(meera.d));
+    expect(plus5.map((r) => r['registration_number'])).toContain('GJ01TU2255');
   });
 
   it('lists activity for the day the booking was taken', () => {
     const r = runReport(db, 'bookings-activity', TODAY);
-    expect(r.rows).toHaveLength(1);
-    expect(r.rows[0]!['source']).toBe('dealer');
+    expect(r.rows).toHaveLength(count(`SELECT COUNT(*) n FROM bookings WHERE created_at >= ?`, TODAY));
+    expect(r.rows.map((x) => x['source'])).toContain('dealer');
   });
 });

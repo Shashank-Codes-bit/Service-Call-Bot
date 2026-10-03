@@ -154,7 +154,7 @@ export class HaikuClassifier implements Classifier {
     const schema = schemaFor(
       req.state,
       [...new Set(models)].filter((m) => m !== 'none'),
-      [...new Set(req.kbKeys ?? [])].filter((k) => k && k !== 'none'),
+      [...new Set((req.kbTopics ?? []).map((t) => t.key))].filter((k) => k && k !== 'none'),
     );
 
     // B3 (amended): strip what we already hold before the words leave this
@@ -165,6 +165,12 @@ export class HaikuClassifier implements Classifier {
       .map((v) => `- ${v.model} (registration ends ${v.last4})`)
       .join('\n');
 
+    // The shortlist for this utterance, named so the model can recognise a
+    // topic by what it is rather than by its key.
+    const topics = (req.kbTopics ?? [])
+      .map((t) => `- ${t.key}: ${t.title}${t.phrases.length ? ` (customers say: ${t.phrases.slice(0, 8).join(', ')})` : ''}`)
+      .join('\n');
+
     const user =
       `Call date: ${req.today} (${WEEKDAY[weekdayOf(req.today)]})\n` +
       // Weekday names given, not implied. From "2026-09-14" alone the model
@@ -173,6 +179,7 @@ export class HaikuClassifier implements Classifier {
       `Calendar: ${calendar(req.today)}\n` +
       `Conversation point: ${describeState(req.state)}\n` +
       (candidates ? `Caller's vehicles:\n${candidates}\n` : '') +
+      (topics ? `Topics this centre has published answers for (kb_key):\n${topics}\n` : '') +
       `\nCaller said: "${safe}"`;
 
     this.calls += 1;

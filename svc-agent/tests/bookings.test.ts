@@ -110,6 +110,8 @@ describe('createBooking — the single write path', () => {
     // a leaked slot here would silently shrink the day for everyone else.
     const date = addDays(TODAY, 8);
     const before = slot(date, 'minor', 'morning');
+    const count = () => (db.prepare(`SELECT COUNT(*) n FROM bookings`).get() as { n: number }).n;
+    const countBefore = count();
 
     expect(() =>
       createBooking(db, {
@@ -123,9 +125,7 @@ describe('createBooking — the single write path', () => {
     ).toThrow(DuplicateBookingError);
 
     expect(slot(date, 'minor', 'morning')).toEqual(before);
-    expect(
-      (db.prepare(`SELECT COUNT(*) n FROM bookings`).get() as { n: number }).n,
-    ).toBe(1); // still just Meera's
+    expect(count()).toBe(countBefore);
   });
 
   it('rolls back the whole transaction if the insert fails', () => {

@@ -37,9 +37,10 @@
   do not raise it again.
 - Claude does not type API keys or passwords into anything (forms, CLI
   arguments, Fly secrets). The user runs those commands; Claude prepares them.
-- `ADMIN_PASSWORD` in `.env` is still a weak demo value. The user should
-  change it before deploying — on a public URL it is the only thing guarding
-  capacity edits and booking cancellation.
+- Since 2026-10-03, `ADMIN_PASSWORD` is only read **once**: on the first
+  boot after the move to separate centres, it becomes the sign-in password of
+  the first centre (user ID `voltas`). After that the scrypt hash in
+  `accounts.db` is what counts; changing the env value does nothing.
 
 ---
 
@@ -160,8 +161,8 @@ exact question pending, keeping the keypad hint (`expectsDigits`).
 | path | guard | purpose |
 |---|---|---|
 | `GET /health` | open | liveness, no DB |
-| `POST /api/chat/start` `{callerNumber}` | open, 30/min/IP | begin a conversation; the number stands in for caller ID |
-| `POST /api/chat/turn` `{sessionId, utterance}` | open, 30/min/IP | one turn → `TurnResult` (+ `sms[]` in DEMO_MODE only) |
+| `POST /api/chat/start` `{callerNumber}` | signed in, 30/min/IP | begin a conversation; the number stands in for caller ID |
+| `POST /api/chat/turn` `{sessionId, utterance}` | signed in, 30/min/IP, daily cap | one turn → `TurnResult` (+ `sms[]` in DEMO_MODE only) |
 | `GET /api/summary` | open | centre + counts for the header |
 | `GET /api/capacity/master` | open | 7×6 weekday master |
 | `PUT /api/capacity/master` | admin | save **and** apply to the live window, one transaction; returns conflicts |
@@ -180,8 +181,10 @@ exact question pending, keeping the keypad hint (`expectsDigits`).
 | `/vapi/chat/completions` | `CALL_API_SECRET`, 240/min | Vapi custom-LLM adapter |
 | everything else | open | the portal SPA |
 
-Guards accept `Authorization: Bearer <value>` or `x-admin-password`. **An unset
-secret refuses (503), it never opens** — fail closed.
+Since 2026-10-03 every `/api` route is **signed in** (section 5a): the guard
+column's "open" and "admin" both now mean "the signed-in centre". The call
+secret accepts `Authorization: Bearer <value>`. **An unset secret refuses
+(503), it never opens** — fail closed.
 
 ---
 
@@ -223,15 +226,9 @@ secret refuses (503), it never opens** — fail closed.
 
 | file | role |
 |---|---|
-| `App.tsx` | header with counts, four tabs, **Chat with the agent** toggle; `version` counter bumped when a chat ends or a booking closes so open views refetch |
-| `api.ts` | typed client; re-exports shared constants; `dropTime()`; `withPassword()` prompts once for the admin password on a 401 and keeps it for the tab (sessionStorage) |
-| `views/Chat.tsx` | the side panel: "Call as" (seeded customers or another number), transcript, round-trip time under each agent reply, SMS cards, outcome banner |
-| `views/Capacity.tsx` | master grid (save = apply), 30-day window, take a slot as the dealer |
-| `views/Arrivals.tsx` | bookings arriving on a day; **Completed / Cancel** buttons |
-| `views/Calls.tsx` | every conversation and its transcript |
-| `views/Reports.tsx` | the seven reports |
+Rebuilt on 2026-10-03; see section 5a. `App.tsx` (shell, hash routes, header search, avatar menu, `N` and `/`), `api.ts` (typed client; a 401 returns to sign-in), `ui.tsx` (plate, drawer, wording helpers), `views/` Gate, Today, BookDrawer, DetailDrawer, PlacesDrawer, FollowUps, Conversations, Agent.
 
-### `tests/` — 298 offline + 19 live, all passing
+### `tests/` — 298 offline + 19 live, all passing (332 offline after 2026-10-03, adding `accounts`, `board` and `followups` tests)
 
 | file | tests | covers |
 |---|---|---|
@@ -258,7 +255,11 @@ secret refuses (503), it never opens** — fail closed.
 | `PORT` | 3001 | — | `8080` (fly.toml) |
 | `DB_PATH` | `svc-agent/service.db` | — | `/data/service.db` (volume) |
 | `CLAUDE_API_KEY` | none → stub classifier | set | **secret** (user sets) |
-| `ADMIN_PASSWORD` | none → writes refused | set (weak demo value) | **secret** (user sets) |
+| `ADMIN_PASSWORD` | none → no first centre is made | set | first-boot password of centre `voltas` (section 5a) |
+| `SESSION_SECRET` | generated once, kept in `accounts.db` | — | optional |
+| `ORG_DAILY_TURNS` | 300 | — | — |
+| `DEFAULT_ORG` | `voltas` | — | — |
+| `DATA_DIR` | folder of `DB_PATH` | — | — |
 | `CALL_API_SECRET` | none → `/call`, `/vapi` refused | set | **secret** (user sets) |
 | `DEMO_MODE` | `false` | `true` | `true` (fly.toml) |
 | `CENTRE_TIMEZONE` | `Asia/Kolkata` | — | — |
@@ -267,6 +268,145 @@ secret refuses (503), it never opens** — fail closed.
 Boot log should read: capacity line, `database … (existing data kept | seeded
 fresh)`, `classifier Haiku (live)`, `clock Asia/Kolkata, today YYYY-MM-DD`,
 `demo mode on`, and **no** `warning` lines.
+
+---
+
+## 5a. Separate centres, sign-in and the service desk (2026-10-03)
+
+Phases 1–3 of the plan agreed after mockup v4
+(https://claude.ai/artifact/E5UYEP11j3C1qn433buzSk). Phase 4's Knowledge page and the
+KB miss carrying on are built too (below); the internal error log and
+phase 5 (public `/try/<slug>`, Vapi web call) are not.
+
+**Storage: one SQLite file per centre.**
+- `DATA_DIR` defaults to the folder of `DB_PATH`, so `/data` on the VM.
+- `accounts.db` holds the `orgs` table (slug, name, user ID, scrypt hash,
+  optional daily cap) and `meta` (the generated cookie key).
+- `orgs/<slug>.db` is each centre's database, with the same schema as before.
+  No table gained an org column; `CENTRE_ID = 1` inside each file.
+- **First boot after the upgrade:**
+  - the old `DB_PATH` file is copied with `VACUUM INTO` to `orgs/voltas.db`,
+    with name = its centre row;
+  - it signs in as `voltas` / the current `ADMIN_PASSWORD`;
+  - the original `service.db` is left untouched as the backup.
+
+  With no old file, a sample `voltas` centre is created instead, if
+  `ADMIN_PASSWORD` is set.
+- `src/db/migrate.ts` adds the new columns to any centre file on open,
+  idempotently:
+  - `leads.status`, `outcome`, `note`, `team`, `closed_by`, `closed_at`;
+  - `bookings.arrived_at`.
+
+**Sign-in** (`src/auth.ts`, `src/dealer/app.ts`):
+- `POST /auth/login`, `/auth/signup`, `/auth/logout`; `GET /auth/me`.
+- The cookie is `sid`: HttpOnly, SameSite=Strict, `Secure` behind the proxy,
+  12 h, HMAC over slug, expiry and password hash. Changing a password signs
+  every device out.
+- `Authorization: Basic userId:password` also works, for scripts.
+- Login is limited to 10/min per IP; sign-up to 5/hour per IP.
+- `requireAdmin` and the portal's password prompt are gone.
+
+**Daily cap:** caller turns per centre per day (`ORG_DAILY_TURNS`, default
+300). Past it, `/api/chat/turn`, `/call/turn` and `/vapi` return 429
+`daily_cap`. The portal keeps working.
+
+**Voice endpoints:** `/call` and `/vapi` pick the centre from the `x-org`
+header or `?org=`, defaulting to `DEFAULT_ORG` (`voltas`).
+
+**New `/api` routes:**
+- `GET /day?date=`: board rows with `late` / `late_min` on the centre's clock,
+  plus places used.
+- `GET /days`: the date strip.
+- `GET /search?q=`: name, phone, plate or reference. Digits-only queries match
+  phones.
+- `GET /customers/:id`: the customer's cars, with the desk-worded blocker per
+  car, from the agent's D2/D3 rules and any open booking.
+- `GET /free?days=`: free places per pool and drop.
+- `GET /bookings/:ref`: one booking, plus the call that made it.
+- `POST /bookings/:ref/reschedule`: `rescheduleBooking`, a guarded increment
+  then a release, keeping the reference.
+- `PATCH /bookings/:ref {arrived}`.
+- `GET /followups` (filters, paging, team tiles, week figures).
+- `PATCH /followups/:id {team | close:{outcome,note} | reopen}`.
+- `POST /followups/bulk`.
+- `GET /followups.csv`: 13 columns, RFC 4180, formula cells prefixed with
+  `'`.
+- `GET /calls?days=`.
+
+**Portal** (`src/web/dealer/`, plain CSS from the mockup's tokens, no
+Tailwind classes):
+- `Gate`: sign in and create a centre.
+- `Today`: date strip, two pegboard columns, T-cards, arrived / cancel / late,
+  call-back rail, latest calls.
+- `BookDrawer`: find → car (blocked cars disabled) → day strip → slot and
+  note, with the race refusal shown inline.
+- `DetailDrawer`: details, mark arrived, reschedule, cancel, hear the call.
+- `PlacesDrawer`: the weekly master and the booking window.
+- `FollowUps`: tiles, filters, Load more, close with an outcome, reopen,
+  reassign, bulk, CSV.
+- `Conversations`: last 7 days plus the transcript.
+- `Agent`: the chat, signed in.
+- Keyboard: `N` opens a new booking, `/` jumps to search.
+
+**Sample data** (`src/db/sample.ts`, `seed.ts`), the same for every new
+centre, made by code with no model calls:
+- the scenario customers are unchanged;
+- a sample fleet fills today's board (9 cars, 2 arrived), tomorrow's and a
+  spread over two weeks;
+- **every capacity bend is now real bookings**, so a full day is a column of
+  cards;
+- 26 follow-ups over 7 days (9 open: 7 today, 2 yesterday);
+- 9 conversations today, in the agent's own wording, with the centre's name.
+
+**Knowledge (Phase 4, same PR).** The Knowledge page has Cars we service,
+Services and packages, Offers (with an optional end date), and Centre
+essentials.
+
+*How the agent always has the latest version:* there is no update step. It
+reads `knowledge_bank` on every turn:
+1. A shortlist for this utterance (`TableKnowledgeBank.shortlist`): every
+   essentials entry plus the top 6 FTS5 matches.
+2. The search index is `knowledge_fts`, an external-content FTS5 table kept in
+   step by INSERT/UPDATE/DELETE triggers. So an edit is indexed in the same
+   transaction that saved it.
+3. Expiry is a `WHERE` at read time, so an offer stops being mentioned the day
+   after `valid_until` with nobody touching it.
+4. The shortlist goes to the classifier as the `kb_key` enum, with titles and
+   the customers' own phrases. That keeps it one model call per turn.
+5. `answerFor(key, today)` reads the answer when it is spoken.
+
+Tests prove that an entry added, edited or removed during a live call
+changes the very next turn.
+
+*Other rules:*
+- **A miss no longer ends the call.** `passOn()` files one customer-care
+  follow-up per call (later misses are appended to it) and texts the team's
+  number, and the booking carries on (template `KB_PASSED`).
+- **Centre essentials is one form** (`centre_profile`). Saving it rewrites the
+  essentials answers and the `centres` row, so the name, the SMS desk number
+  and the hours change together.
+- **Test a question** (`POST /api/knowledge/ask`) runs `answerQuestion()`, the
+  same shortlist and classifier a call uses.
+- The old `/api/kb/:key` routes still work.
+- Files: `src/kb/index.ts`, `src/kb/knowledge.ts`, `src/dealer/knowledge.ts`,
+  `src/web/dealer/views/Knowledge.tsx`, `tests/knowledge.test.ts`.
+- The migrated live centre keeps its six answers until someone saves the
+  essentials form; until then, the form shows a draft and says so.
+
+**New env:** `SESSION_SECRET` (optional; else generated once and kept in
+`accounts.db`), `ORG_DAILY_TURNS`, `DEFAULT_ORG`, `DATA_DIR`.
+
+**Deploying this to the VM** (same compose; no new secrets needed):
+
+```bash
+cd ~/Service-Call-Bot && git pull
+cd svc-agent/deploy/oracle && docker compose up -d --build
+docker compose logs --tail 20   # expect: moved /data/service.db in as "voltas"; original kept
+```
+
+Then sign in at the site with user ID `voltas` and the current admin password.
+The live centre keeps its real data, so its board is mostly empty. "Create an
+account" on the sign-in page opens a centre with the full sample.
 
 ---
 

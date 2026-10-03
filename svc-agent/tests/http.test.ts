@@ -25,7 +25,6 @@ import { config } from '../src/config.ts';
 
 const NOW = new Date();
 const TODAY = today(NOW);
-const ADMIN = config.adminPassword || 'test-admin';
 const SECRET = config.callApiSecret || 'test-secret';
 
 let scratch: string;
@@ -34,7 +33,6 @@ let app: express.Express;
 
 beforeEach(() => {
   // The guards read config at request time, so tests can set them here.
-  vi.spyOn(config, 'adminPassword', 'get' as never).mockReturnValue(ADMIN as never);
   vi.spyOn(config, 'callApiSecret', 'get' as never).mockReturnValue(SECRET as never);
 
   scratch = mkdtempSync(join(tmpdir(), 'svc-http-'));
@@ -55,40 +53,16 @@ afterEach(() => {
   rmSync(scratch, { recursive: true, force: true });
 });
 
-const auth = (r: request.Test) => r.set('x-admin-password', ADMIN);
 const callAuth = (r: request.Test) => r.set('authorization', `Bearer ${SECRET}`);
 
-describe('auth — reads open, writes closed', () => {
-  it('serves every read without a password', async () => {
-    for (const path of [
-      '/api/summary',
-      '/api/capacity/master',
-      '/api/capacity/window?days=3',
-      '/api/vehicles',
-      '/api/reports',
-      `/api/bookings/arrivals?date=${TODAY}`,
-    ]) {
+describe('auth — the call endpoints', () => {
+  // The portal's door is the centre's sign-in now (accounts.test.ts); the
+  // router itself carries no password, so these reads and writes go straight in.
+  it('serves the portal router to whoever mounted it', async () => {
+    for (const path of ['/api/summary', '/api/capacity/master', '/api/day', '/api/followups']) {
       await request(app).get(path).expect(200);
     }
-  });
-
-  it.each([
-    ['put', '/api/capacity/master'],
-    ['post', '/api/capacity/regenerate'],
-    ['post', '/api/bookings'],
-  ] as const)('refuses %s %s without the password', async (method, path) => {
-    await request(app)[method](path).send({}).expect(401);
-  });
-
-  it('accepts a write with the password', async () => {
-    await auth(request(app).post('/api/capacity/regenerate')).expect(200);
-  });
-
-  it('refuses a wrong password', async () => {
-    await request(app)
-      .post('/api/capacity/regenerate')
-      .set('x-admin-password', 'not-it')
-      .expect(401);
+    await request(app).post('/api/capacity/regenerate').expect(200);
   });
 
   it('refuses the call endpoints without the secret', async () => {
@@ -96,11 +70,21 @@ describe('auth — reads open, writes closed', () => {
     await request(app).post('/vapi/chat/completions').send({}).expect(401);
   });
 
+  it('refuses a wrong secret', async () => {
+    await request(app)
+      .post('/call/start')
+      .set('authorization', 'Bearer not-it')
+      .send({ callerNumber: '9810011001' })
+      .expect(401);
+  });
+
   it('DISABLES rather than opens an endpoint whose secret is unconfigured', async () => {
-    // The failure mode that matters: a deploy with no password set must not
-    // leave writes wide open. Unset is 503, never a silent pass-through.
-    vi.spyOn(config, 'adminPassword', 'get' as never).mockReturnValue('' as never);
-    const res = await auth(request(app).post('/api/capacity/regenerate')).expect(503);
+    // The failure mode that matters: a deploy with no secret set must not
+    // leave the call endpoints wide open. Unset is 503, never a pass-through.
+    vi.spyOn(config, 'callApiSecret', 'get' as never).mockReturnValue('' as never);
+    const res = await callAuth(request(app).post('/call/start'))
+      .send({ callerNumber: '9810011001' })
+      .expect(503);
     expect(res.body.kind).toBe('not_configured');
   });
 });
@@ -306,7 +290,10 @@ describe('the Vapi adapter', () => {
       await vapiTurn('vapi-book', line).expect(200);
     }
     const n = db
-      .prepare(`SELECT COUNT(*) n FROM bookings WHERE source = 'ai'`)
+      .prepare(
+        `SELECT COUNT(*) n FROM bookings b JOIN vehicles v ON v.id = b.vehicle_id
+         WHERE b.source = 'ai' AND v.registration_number = 'HR26AB4471'`,
+      )
       .get() as { n: number };
     expect(n.n).toBe(1);
   });

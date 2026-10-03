@@ -296,7 +296,11 @@ export const COST_ANSWER = [
   "That varies with the vehicle, so they'll give you a proper estimate after they've had a look at it.",
 ] as const;
 
-/** D10 — the bank has no answer. We never guess. */
-export const KB_MISS = [
-  "That one I genuinely can't answer from here, and I'd rather not guess. I'll pass it to the team and they'll call you back — I'm texting you their direct number as well.",
+/**
+ * D10 — the bank has no answer. We never guess, and we don't drop the caller
+ * either: the question goes to the team, and the booking carries on.
+ */
+export const KB_PASSED = [
+  "That one I can't answer myself, and I'd rather not guess — I've passed it to the team and they'll get back to you. I'm texting you their number too.",
+  "I don't have that to hand, so I've passed your question to the team and they'll call you back. Their number's coming by text.",
 ] as const;
