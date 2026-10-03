@@ -429,6 +429,17 @@ shares, with no sign-in (`src/web/dealer/try/`, `src/dealer/public.ts`).
      server log: an error there means Vapi carried the variables somewhere
      `callIdentity` doesn't look yet.
 
+**End-to-end check: `npm run e2e`** (in `svc-agent/`, about 15 s). It builds the
+portal, starts a throwaway server (its own temp data, demo mode, the offline
+classifier, placeholder Vapi keys), and drives Chromium through 28 checks:
+sign-in, the board, bookings, follow-ups and CSV, conversations, places,
+knowledge (live mid-call edits, pass-on, expiry, essentials to SMS), the public
+voice page (Vapi SDK loads and reaches api.vapi.ai, the browser-voice booking,
+chat, Not found) and 390 px phone width. Exit code 1 on any failure.
+- Run it after any change.
+- It caught the "n is not a constructor" bug when that bug was put back.
+- On a laptop, run `npx playwright install chromium` once first.
+
 **New env:** `SESSION_SECRET` (optional; else generated once and kept in
 `accounts.db`), `ORG_DAILY_TURNS`, `DEFAULT_ORG`, `DATA_DIR`.
 
