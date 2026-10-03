@@ -53,6 +53,18 @@ export const config = {
    *  in accounts.db, so restarts don't sign everyone out. */
   sessionSecret: str('SESSION_SECRET'),
 
+  /**
+   * Vapi web calls on the public page. The public key and assistant id go to
+   * the browser — Vapi designs the public key to be public; lock it to this
+   * site in Vapi's dashboard. Unset, the page uses the browser's own speech.
+   */
+  vapiPublicKey: str('VAPI_PUBLIC_KEY'),
+  vapiAssistantId: str('VAPI_ASSISTANT_ID'),
+  /** Only for `npm run vapi:setup`. Never sent anywhere but Vapi's API. */
+  vapiPrivateKey: str('VAPI_PRIVATE_KEY'),
+  /** This site's own address, e.g. https://140-238-251-141.sslip.io — Vapi calls back to it. */
+  publicUrl: str('PUBLIC_URL').replace(/\/+$/, ''),
+
   /** Conversation turns a centre gets per day — every turn can cost a model call. */
   orgDailyTurns: Number(str('ORG_DAILY_TURNS', '300')),
 

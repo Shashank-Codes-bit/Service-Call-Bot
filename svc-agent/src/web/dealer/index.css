@@ -343,6 +343,24 @@ button.avatar:hover { box-shadow: 0 0 0 3px #F9E39A; }
   .filters .field { width: 100%; }
 }
 
+/* try the agent (public, per org) */
+.try { max-width: 1000px; margin: 0 auto; padding-inline: 16px; padding-block: 28px 48px; display: grid; gap: 22px; }
+.try .hero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); gap: 28px; align-items: start; }
+@media (max-width: 840px) { .try .hero { grid-template-columns: minmax(0, 1fr); } }
+.try h1 { font-size: clamp(2rem, 5vw, 3rem); font-weight: 700; }
+.addr { font-size: var(--step--1); color: var(--muted); }
+.facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 20px; font-size: var(--step--1); }
+.facts b { display: block; font-size: var(--step-0); }
+.voice { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px; display: grid; gap: 14px; }
+.talk { width: 100%; display: flex; align-items: center; justify-content: center; gap: 12px; padding: 18px; border-radius: 12px; border: 0;
+  background: var(--ink); color: #FFFFFF; font-family: var(--display); font-size: var(--step-2); font-weight: 700; }
+.talk .mic { width: 34px; height: 34px; border-radius: 50%; background: var(--tag); color: var(--tag-ink); display: grid; place-items: center; font-family: var(--body); font-size: 1rem; }
+.captions { display: grid; gap: 8px; max-height: 340px; overflow-y: auto; }
+.captions .msg.agent { background: var(--bg); }
+.saychips { display: flex; flex-wrap: wrap; gap: 6px; }
+.sms { border: 1px dashed var(--line); border-radius: 8px; padding: 8px 10px; font-size: var(--step--1); white-space: pre-line; }
+.urlbar { font-size: var(--step--1); color: var(--muted); user-select: all; }
+
 /* ---------- app additions ---------- */
 a.btn { display: inline-block; color: var(--ink); text-decoration: none; }
 #root { min-height: 100vh; }
@@ -367,3 +385,10 @@ a.btn { display: inline-block; color: var(--ink); text-decoration: none; }
 .closer .who { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: var(--step--1); }
 .closer .who .field { width: 160px; padding: 5px 8px; }
 .conflict { font-size: var(--step--1); }
+.try .captions .msg { max-width: 88%; }
+.try .callas { display: grid; gap: 6px; }
+.try .callas .field { width: 100%; }
+.try .modehint { font-size: var(--step--1); color: var(--muted); }
+.talk[disabled] { opacity: .6; cursor: progress; }
+.talk.stop { background: var(--alert); }
+.interim { opacity: .6; font-style: italic; }

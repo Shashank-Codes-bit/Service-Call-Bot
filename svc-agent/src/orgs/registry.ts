@@ -7,6 +7,7 @@ import { buildDeps, callApi } from '../call/http.ts';
 import { vapiApi } from '../call/vapi.ts';
 import type { CallDeps } from '../call/machine.ts';
 import { today } from '../shared/dates.ts';
+import { config } from '../config.ts';
 import type { Accounts } from './accounts.ts';
 
 /** One centre, open: its database and the routers that serve it. */
@@ -46,7 +47,10 @@ export class Registry {
       deps,
       api: api(db, { deps }),
       call: callApi(db, deps),
-      vapi: vapiApi(db, deps),
+      // Voice can't take a 429 — over the day's cap, the caller hears a sentence.
+      vapi: vapiApi(db, deps, {
+        overCap: () => turnsToday(db) >= (this.accounts.get(slug)?.daily_turn_cap ?? config.orgDailyTurns),
+      }),
     };
     this.open.set(slug, handle);
     return handle;

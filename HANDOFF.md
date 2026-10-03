@@ -275,8 +275,8 @@ fresh)`, `classifier Haiku (live)`, `clock Asia/Kolkata, today YYYY-MM-DD`,
 
 Phases 1–3 of the plan agreed after mockup v4
 (https://claude.ai/artifact/E5UYEP11j3C1qn433buzSk). Phase 4's Knowledge page and the
-KB miss carrying on are built too (below); the internal error log and
-phase 5 (public `/try/<slug>`, Vapi web call) are not.
+KB miss carrying on are built too (below); phase 5's public page is too (below); the
+internal error log is not.
 
 **Storage: one SQLite file per centre.**
 - `DATA_DIR` defaults to the folder of `DB_PATH`, so `/data` on the VM.
@@ -392,6 +392,42 @@ changes the very next turn.
   `src/web/dealer/views/Knowledge.tsx`, `tests/knowledge.test.ts`.
 - The migrated live centre keeps its six answers until someone saves the
   essentials form; until then, the form shows a draft and says so.
+
+**Talk to the agent (Phase 5).** `/try/<slug>` is the public page each centre
+shares, with no sign-in (`src/web/dealer/try/`, `src/dealer/public.ts`).
+- The visitor calls as one of the sample customers (`SAMPLE_CALLERS` in
+  `db/sample.ts`), or with their own number in DEMO_MODE.
+- **Voice through Vapi** when `VAPI_PUBLIC_KEY` and `VAPI_ASSISTANT_ID` are set:
+  - the browser starts a Vapi web call with
+    `variableValues: { org, callerNumber }`;
+  - Vapi fills those into the assistant's system message
+    (`svc-agent org={{org}} caller={{callerNumber}}`), and
+    `vapi.ts callIdentity()` reads them back. It also looks in
+    `call.assistantOverrides.variableValues` and `metadata`;
+  - the words still come from our state machine through `/vapi`, behind
+    `CALL_API_SECRET`, which Vapi stores as the assistant's custom-LLM
+    credential;
+  - a finished conversation ends with "Goodbye.", the assistant's only
+    end-call phrase;
+  - over the daily cap, the caller hears a sentence instead of silence.
+- **Otherwise, the browser's own speech:** recognition in en-IN plus
+  `speechSynthesis`, driving `/public/<slug>/chat/*` turn by turn. It's free,
+  for Chrome and Edge; other browsers get the typed chat.
+- **Setting up Vapi, once, by the user** (Claude never handles the keys):
+  1. Create a Vapi account. Put `VAPI_PRIVATE_KEY`, `VAPI_PUBLIC_KEY` and
+     `PUBLIC_URL=https://140-238-251-141.sslip.io` in the VM's
+     `svc-agent/deploy/oracle/.env`.
+  2. Run `docker compose up -d --build`, then
+     `docker compose exec app npm run vapi:setup`. It creates or updates the
+     "Service desk agent" assistant: custom LLM `${PUBLIC_URL}/vapi`,
+     Deepgram nova-3 en-IN, the Azure en-IN Neerja voice, 5-minute limit.
+  3. Add the printed `VAPI_ASSISTANT_ID` to `.env` and run
+     `docker compose up -d`.
+  4. In Vapi's dashboard, restrict the public key's allowed origins to the
+     site.
+  5. **Not yet verified against live Vapi.** On the first real call, check the
+     server log: an error there means Vapi carried the variables somewhere
+     `callIdentity` doesn't look yet.
 
 **New env:** `SESSION_SECRET` (optional; else generated once and kept in
 `accounts.db`), `ORG_DAILY_TURNS`, `DEFAULT_ORG`, `DATA_DIR`.

@@ -171,7 +171,7 @@ function Portal({ me, fresh, onOut, refreshMe }: { me: Me; fresh: boolean; onOut
                     </button>
                     <button type="button" className="item" role="menuitem" onClick={() => { setMenu(false); go('agent'); }}>
                       <span>Your agent</span>
-                      <small>Talk to it the way a customer would</small>
+                      <small>/try/{me.slug} · voice and chat to share</small>
                     </button>
                     <hr />
                     <button type="button" className="item" role="menuitem" onClick={signOut}>
