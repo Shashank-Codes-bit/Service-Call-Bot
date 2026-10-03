@@ -133,6 +133,13 @@ export function vapiApi(
       let sessionId = sessionIdForExternal(db, externalId);
 
       if (!sessionId) {
+        // One line per call, so the first real call shows how it was routed.
+        // The number is masked; no message content is logged.
+        const centre = (db.prepare(`SELECT name FROM centres WHERE id = 1`).get() as { name: string } | undefined)?.name;
+        console.log(
+          `  vapi call  ${externalId.slice(0, 8)} → ${centre ?? '?'}, caller ${callerNumber ? `******${callerNumber.slice(-4)}` : 'unknown'}` +
+            `${callIdentity(body).org ? '' : ' (no centre in the call; default used)'}`,
+        );
         const opened = await startCall(db, callerNumber || '0000000000', new Date(), externalId);
         sessionId = opened.sessionId;
         // If Vapi already has audio from the caller, answer it rather than

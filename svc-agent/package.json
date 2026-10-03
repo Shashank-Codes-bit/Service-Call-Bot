@@ -13,7 +13,8 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "test:live": "vitest run --config vitest.live.config.ts",
-    "vapi:setup": "tsx src/tools/vapi-setup.ts"
+    "vapi:setup": "tsx src/tools/vapi-setup.ts",
+    "e2e": "vite build && tsx tests/e2e/run.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.127.0",
@@ -32,6 +33,7 @@
     "@types/supertest": "^7.2.1",
     "@vapi-ai/web": "^2.7.1",
     "@vitejs/plugin-react": "^6.1.1",
+    "playwright": "^1.56.1",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "supertest": "^7.2.2",
