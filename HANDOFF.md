@@ -429,6 +429,19 @@ shares, with no sign-in (`src/web/dealer/try/`, `src/dealer/public.ts`).
      server log: an error there means Vapi carried the variables somewhere
      `callIdentity` doesn't look yet.
 
+**After the first live Vapi call (2026-10-04):**
+- The page joins Vapi's phrase-by-phrase transcript into one bubble per turn (`groupLines`).
+- The hang-up after "Goodbye." is no longer shown as an error (`isNormalEnd`), and any real error is a sentence, not `[object Object]` (`errorText`).
+- At the greeting, a clear "yes" wins over a mistaken escalation, which had ended a good call.
+- Each voice turn logs its labels only: `vapi turn <id> greeting → yes …`.
+- `vapi:setup` now sets:
+  - a 2-word interrupt threshold;
+  - a 0.6 s wait with LiveKit smart endpointing;
+  - Krisp denoising;
+  - Deepgram keyterms for car names and days.
+
+  Re-run it on the VM after deploying; it updates the same assistant.
+
 **End-to-end check: `npm run e2e`** (in `svc-agent/`, about 15 s). It builds the
 portal, starts a throwaway server (its own temp data, demo mode, the offline
 classifier, placeholder Vapi keys), and drives Chromium through 28 checks:

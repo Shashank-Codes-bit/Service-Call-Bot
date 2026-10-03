@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { browserVoiceSupported, startBrowserVoice, startVapi, type Line, type Status, type VoiceCall } from './voice.ts';
+import { browserVoiceSupported, groupLines, startBrowserVoice, startVapi, type Line, type Status, type VoiceCall } from './voice.ts';
 
 type Caller = { name: string; model: string | null; mobile: string; shows: string };
 type Centre = {
@@ -247,6 +247,7 @@ export function TryPage({ slug }: { slug: string }) {
               <p className="modehint">
                 {caller ? `You’ll be ${caller.name}, ${phone(caller.mobile)}. ` : number.length === 10 ? `You’ll call from ${phone(number)}; a new number gets a demo car. ` : ''}
                 Uses your microphone. {vapi ? 'Speaks Indian English.' : 'Uses your browser’s own voice.'}
+                {' '}Best with earphones, so the agent doesn’t hear itself. Let it finish, then answer.
               </p>
               <button type="button" className="linklike small" style={{ justifySelf: 'start' }} onClick={startChat} disabled={number.length !== 10}>
                 Prefer typing? Chat instead
@@ -259,7 +260,7 @@ export function TryPage({ slug }: { slug: string }) {
                 <span className="muted nums">{caller ? `${caller.name}, ${phone(caller.mobile)}` : phone(number)}</span>
               </div>
               <div className="captions" ref={box} aria-live="polite">
-                {lines.map((l, i) =>
+                {groupLines(lines).map((l, i) =>
                   l.who === 'sms' ? (
                     <div key={i} className="sms nums">
                       SMS to {phone(number)}
@@ -267,7 +268,7 @@ export function TryPage({ slug }: { slug: string }) {
                       {l.text}
                     </div>
                   ) : (
-                    <div key={i} className={`msg ${l.who} ${'interim' in l && l.interim ? 'interim' : ''}`}>
+                    <div key={i} className={`msg ${l.who} ${l.interim ? 'interim' : ''}`}>
                       <small>{l.who === 'agent' ? 'Agent' : 'You'}</small>
                       {l.text}
                     </div>

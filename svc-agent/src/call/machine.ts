@@ -107,6 +107,37 @@ export async function handleTurn(
   utterance: string,
   now: Date = new Date(),
 ): Promise<TurnResult> {
+  const note: { understood?: string } = {};
+  const result = await turn(db, deps, sessionId, utterance, now, note);
+  return note.understood ? { ...result, understood: note.understood } : result;
+}
+
+/** The labels a turn was acted on: no words, so it is safe to log. */
+function labels(state: CallState, cls: import('./classifier.ts').Classification, overridden: boolean): string {
+  const parts = [
+    cls.yesNo,
+    cls.intent,
+    cls.outOfBand && `question:${cls.outOfBand}${cls.kbKey ? '+answer' : ''}`,
+    cls.vehicleModel && 'car',
+    cls.vehicleLast4 && 'last4',
+    cls.day && 'day',
+    cls.noPreference && 'any-day',
+    cls.dropSlot,
+    cls.complaint && 'complaint',
+    cls.specialRequest && 'request',
+    cls.nothing && 'nothing-wrong',
+  ].filter(Boolean);
+  return `${state} → ${parts.join(', ') || 'nothing clear'}${overridden ? ' (escalation ignored: answering the question)' : ''}`;
+}
+
+async function turn(
+  db: Database,
+  deps: CallDeps,
+  sessionId: string,
+  utterance: string,
+  now: Date,
+  note: { understood?: string },
+): Promise<TurnResult> {
   const session = loadSession(db, sessionId);
   if (!session) throw new Error(`no session ${sessionId}`);
   if (session.state === 'ended') {
@@ -170,7 +201,16 @@ export async function handleTurn(
     }
     return answerAndResume(ctx, answer);
   }
-  if (cls.intent === 'another_problem') {
+  // A caller answering the question we asked is answering it. Over a voice
+  // line a plain "yes" can arrive with stray words, and the model once read
+  // "Yes. The car is it should have the same number." as an incident and
+  // ended a good call. At these steps the expected answer wins; a real
+  // breakdown is still caught on the very next turn, "What can I do for you?".
+  const answering =
+    (session.state === 'greeting' && cls.yesNo === 'yes') ||
+    ((session.state === 'awaiting_number' || session.state === 'awaiting_otp') && /\d{4,}/.test(utterance.replace(/\s/g, '')));
+  note.understood = labels(session.state, cls, cls.intent === 'another_problem' && answering);
+  if (cls.intent === 'another_problem' && !answering) {
     return routeOut(ctx, 'another_problem', T.pick(T.EXIT.another_problem, seed));
   }
 

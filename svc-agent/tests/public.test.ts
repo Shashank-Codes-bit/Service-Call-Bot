@@ -172,5 +172,10 @@ describe('vapi:setup', () => {
     expect(p.firstMessageMode).toBe('assistant-speaks-first-with-model-generated-message');
     expect(p.endCallPhrases).toEqual(['goodbye']);
     expect(p.maxDurationSeconds).toBeLessThanOrEqual(600);
+    // Tuned after the first live call: hard to interrupt by accident, patient before replying, car names known.
+    expect(p.stopSpeakingPlan.numWords).toBeGreaterThanOrEqual(2);
+    expect(p.startSpeakingPlan.waitSeconds).toBeGreaterThanOrEqual(0.5);
+    expect(p.transcriber.keyterm).toEqual(expect.arrayContaining(['Nexon', 'Friday', 'morning']));
+    expect(p.backgroundSpeechDenoisingPlan.smartDenoisingPlan.enabled).toBe(true);
   });
 });
