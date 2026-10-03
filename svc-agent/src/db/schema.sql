@@ -9,8 +9,8 @@
 
 DROP TABLE IF EXISTS sms_log;
 DROP TABLE IF EXISTS transcripts;
-DROP TABLE IF EXISTS sessions;
 DROP TABLE IF EXISTS leads;
+DROP TABLE IF EXISTS sessions;
 DROP TABLE IF EXISTS booking_counter;
 DROP TABLE IF EXISTS bookings;
 DROP TABLE IF EXISTS slot_capacity;
@@ -140,7 +140,10 @@ CREATE TABLE bookings (
                     CHECK (status IN ('open', 'completed', 'cancelled')),
   -- Lets the demo show both channels on one table.
   source            TEXT NOT NULL CHECK (source IN ('ai', 'dealer')),
-  created_at        TEXT NOT NULL
+  created_at        TEXT NOT NULL,
+  -- Reception's tick when the car is handed over. NULL until then; the board
+  -- flags a car that is half an hour past its drop time without one.
+  arrived_at        TEXT
 );
 
 CREATE INDEX idx_bookings_vehicle_status ON bookings(vehicle_id, status);
@@ -185,7 +188,18 @@ CREATE TABLE leads (
   -- The caller's own words.
   caller_words         TEXT,
   session_id           TEXT REFERENCES sessions(id),
-  created_at           TEXT NOT NULL
+  created_at           TEXT NOT NULL,
+  -- The follow-up queue. A lead is work for a team until someone closes it
+  -- with what came of it; the outcome is what the weekly figures count.
+  status               TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'done')),
+  outcome              TEXT CHECK (outcome IS NULL OR outcome IN (
+                         'booked', 'will_call_back', 'no_answer', 'not_interested', 'wrong_number'
+                       )),
+  note                 TEXT,
+  -- NULL means the team the reason belongs to (reports.ts); set when moved.
+  team                 TEXT,
+  closed_by            TEXT,
+  closed_at            TEXT
 );
 
 CREATE INDEX idx_leads_created_reason ON leads(created_at, reason);

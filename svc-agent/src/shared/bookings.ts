@@ -1,6 +1,6 @@
 import type { Database } from 'better-sqlite3';
 import { addDays, timestamp, today, type IsoDate } from './dates.ts';
-import type { BookingSource, DropSlot, Pool } from './types.ts';
+import { DROP_TIMES, type BookingSource, type DropSlot, type Pool } from './types.ts';
 
 export class SlotFullError extends Error {
   constructor(
@@ -148,6 +148,131 @@ export function closeBooking(
     }
     return 'closed';
   })();
+}
+
+export type RescheduleOutcome =
+  | { outcome: 'moved'; booking: CreatedBooking }
+  | { outcome: 'not_found' | 'not_open' };
+
+/**
+ * Move an open booking to another day or drop slot, keeping its reference.
+ *
+ * Same discipline as `createBooking`: the new place is taken with the guarded
+ * increment and asserted, and only then is the old one given back — all in one
+ * transaction, so a full target leaves the booking exactly where it was.
+ */
+export function rescheduleBooking(
+  db: Database,
+  reference: string,
+  to: { bookingDate: IsoDate; dropSlot: DropSlot },
+): RescheduleOutcome {
+  return db.transaction((): RescheduleOutcome => {
+    const b = db
+      .prepare(
+        `SELECT id, centre_id, booking_date, service_type, drop_slot, status FROM bookings
+         WHERE booking_reference = ?`,
+      )
+      .get(reference) as
+      | {
+          id: number;
+          centre_id: number;
+          booking_date: IsoDate;
+          service_type: Pool;
+          drop_slot: DropSlot;
+          status: string;
+        }
+      | undefined;
+    if (!b) return { outcome: 'not_found' };
+    if (b.status !== 'open') return { outcome: 'not_open' };
+
+    const pickup = expectedPickup(to.bookingDate, b.service_type, to.dropSlot);
+    const result: CreatedBooking = {
+      id: b.id,
+      reference,
+      bookingDate: to.bookingDate,
+      dropSlot: to.dropSlot,
+      expectedPickup: pickup,
+    };
+    if (b.booking_date === to.bookingDate && b.drop_slot === to.dropSlot) {
+      return { outcome: 'moved', booking: result };
+    }
+
+    const taken = db
+      .prepare(
+        `UPDATE slot_capacity SET booked_slots = booked_slots + 1
+         WHERE centre_id = ? AND date = ? AND service_type = ? AND drop_slot = ?
+           AND booked_slots < total_slots`,
+      )
+      .run(b.centre_id, to.bookingDate, b.service_type, to.dropSlot);
+    if (taken.changes !== 1) throw new SlotFullError(to.bookingDate, b.service_type, to.dropSlot);
+
+    db.prepare(
+      `UPDATE slot_capacity SET booked_slots = booked_slots - 1
+       WHERE centre_id = ? AND date = ? AND service_type = ? AND drop_slot = ?
+         AND booked_slots > 0`,
+    ).run(b.centre_id, b.booking_date, b.service_type, b.drop_slot);
+
+    db.prepare(
+      `UPDATE bookings SET booking_date = ?, drop_slot = ?, expected_pickup = ?, arrived_at = NULL
+       WHERE id = ?`,
+    ).run(to.bookingDate, to.dropSlot, pickup, b.id);
+
+    return { outcome: 'moved', booking: result };
+  })();
+}
+
+/** Reception's tick when the car is handed over. Only an open booking. */
+export function markArrived(db: Database, reference: string, now = new Date()): CloseOutcome {
+  const b = db
+    .prepare(`SELECT status FROM bookings WHERE booking_reference = ?`)
+    .get(reference) as { status: string } | undefined;
+  if (!b) return 'not_found';
+  if (b.status !== 'open') return 'not_open';
+  db.prepare(
+    `UPDATE bookings SET arrived_at = COALESCE(arrived_at, ?) WHERE booking_reference = ?`,
+  ).run(timestamp(now), reference);
+  return 'closed';
+}
+
+/** Minutes after the drop time before a car that hasn't arrived is flagged. */
+export const LATE_AFTER_MINUTES = 30;
+
+/**
+ * The day board: every booking on a day that wasn't cancelled, with its car
+ * and customer, and whether it is late — today, open, not arrived, and more
+ * than half an hour past its drop time.
+ */
+export function dayBookings(db: Database, centreId: number, date: IsoDate, now = new Date()) {
+  const rows = db
+    .prepare(
+      `SELECT b.booking_reference AS reference, b.booking_date, b.drop_slot, b.expected_pickup,
+              b.service_type AS pool, b.complaint_note AS note, b.status, b.source,
+              b.created_at, b.arrived_at,
+              c.name AS customer_name, c.mobile_number,
+              v.id AS vehicle_id, v.model, v.registration_number,
+              s.service_number, s.service_type, s.is_free
+       FROM bookings b
+       JOIN vehicles v ON v.id = b.vehicle_id
+       JOIN customers c ON c.id = v.customer_id
+       LEFT JOIN service_due s ON s.vehicle_id = v.id
+       WHERE b.centre_id = ? AND b.booking_date = ? AND b.status != 'cancelled'
+       ORDER BY b.drop_slot, b.created_at, b.booking_reference`,
+    )
+    .all(centreId, date) as Array<{
+    reference: string;
+    drop_slot: DropSlot;
+    status: string;
+    arrived_at: string | null;
+  } & Record<string, unknown>>;
+
+  const isToday = date === today(now);
+  const minutesNow = now.getHours() * 60 + now.getMinutes();
+  return rows.map((r) => {
+    const [h, m] = DROP_TIMES[r.drop_slot].split(':').map(Number) as [number, number];
+    const late =
+      isToday && r.status === 'open' && !r.arrived_at && minutesNow > h * 60 + m + LATE_AFTER_MINUTES;
+    return { ...r, late };
+  });
 }
 
 /** E4's duplicate check. An open booking is open — no date condition (D13). */

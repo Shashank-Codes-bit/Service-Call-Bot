@@ -3,6 +3,9 @@ service.db
 service.db-journal
 service.db-wal
 service.db-shm
+# Separate centres (src/orgs): the sign-in records and one database per centre.
+/accounts.db*
+/orgs/
 dist/
 
 # Never commit credentials. .env.example shows the shape instead.

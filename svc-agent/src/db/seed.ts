@@ -10,6 +10,8 @@ import { fileURLToPath } from 'node:url';
 import { open, resetSchema, DB_PATH } from './index.ts';
 import { addDays, today, timestamp, weekdayOf, type IsoDate } from '../shared/dates.ts';
 import { nextBookingReference } from '../shared/bookings.ts';
+import { SampleFleet, at, type SampleBooking } from './sample.ts';
+import type { Pool } from '../shared/types.ts';
 
 const BOOKING_WINDOW_DAYS = 30; // D5: latest bookable day is 30 days ahead.
 
@@ -367,35 +369,79 @@ generateCapacity();
 // ---------------------------------------------------------------------------
 // Capacity bends — centre 1 only (I3). Centres 2 and 3 stay wide open.
 // These are what make day selection worth testing.
+//
+// Each taken place is a real booking from the sample fleet (sample.ts), so the
+// board shows the cars that fill a day rather than a count with nothing behind it.
 // ---------------------------------------------------------------------------
 
-const fill = db.prepare(
-  `UPDATE slot_capacity SET booked_slots = total_slots
-   WHERE centre_id = 1 AND date = ? AND service_type = ?
-     AND (? IS NULL OR drop_slot = ?)`,
-);
+const fleet = new SampleFleet(db, TODAY, now);
 
 const bends: Array<{ offset: number; note: string; apply: (date: IsoDate) => void }> = [
   {
     offset: 2,
     note: 'minor full both slots — a minor booking must move to another day',
-    apply: (date) => fill.run(date, 'minor', null, null),
+    apply: (date) => {
+      fleet.fill(date, 'minor', 'morning');
+      fleet.fill(date, 'minor', 'afternoon');
+    },
   },
   {
     offset: 3,
     note: 'every pool full both slots — the day is unavailable entirely (D6)',
     apply: (date) => {
-      for (const pool of POOLS) fill.run(date, pool, null, null);
+      for (const pool of POOLS) for (const slot of SLOTS) fleet.fill(date, pool, slot);
     },
   },
   {
     offset: 4,
     note: 'minor morning full, afternoon open — the agent states the slot rather than asking (D6)',
-    apply: (date) => fill.run(date, 'minor', 'morning', 'morning'),
+    apply: (date) => fleet.fill(date, 'minor', 'morning'),
   },
 ];
 
-for (const bend of bends) bend.apply(addDays(TODAY, bend.offset));
+const seedBends = db.transaction(() => {
+  for (const bend of bends) bend.apply(addDays(TODAY, bend.offset));
+});
+seedBends();
+
+// ---------------------------------------------------------------------------
+// The front desk's day. Today's board, tomorrow's, and a light spread over the
+// next fortnight — never a full pool, so the agent's choices are unchanged.
+// Today is never bookable by the agent (D5); these came through earlier.
+// ---------------------------------------------------------------------------
+
+const board = db.transaction(() => {
+  const t = TODAY;
+  const m1 = fleet.book(t, 'minor', 'morning', { source: 'dealer', note: null });
+  const m2 = fleet.book(t, 'major', 'morning', { source: 'ai', note: null });
+  fleet.book(t, 'minor', 'morning', { source: 'ai', note: 'Wipers smear the glass' });
+  fleet.book(t, 'complaint', 'morning', { source: 'ai' });
+  fleet.book(t, 'minor', 'morning', { source: 'dealer', note: null });
+  fleet.book(t, 'minor', 'afternoon', { source: 'ai', note: 'Wash and interior clean too' });
+  fleet.book(t, 'minor', 'afternoon', { source: 'dealer', note: null });
+  fleet.book(t, 'major', 'afternoon', { source: 'ai', note: null });
+  fleet.book(t, 'complaint', 'afternoon', { source: 'ai' });
+  fleet.arrived(m1.reference, '08:41');
+  fleet.arrived(m2.reference, '08:52');
+
+  const t1 = addDays(t, 1);
+  const byAgent = [
+    fleet.book(t1, 'minor', 'morning', { madeDaysAgo: 0, source: 'ai', note: null }),
+    fleet.book(t1, 'complaint', 'morning', { madeDaysAgo: 0, source: 'ai', note: 'Grinding noise when braking' }),
+    fleet.book(t1, 'major', 'afternoon', { madeDaysAgo: 0, source: 'ai', note: null }),
+  ];
+  fleet.book(t1, 'minor', 'morning');
+
+  const spread: Array<[number, Pool, 'morning' | 'afternoon']> = [
+    [6, 'minor', 'morning'], [6, 'major', 'afternoon'], [7, 'minor', 'afternoon'],
+    [8, 'complaint', 'morning'], [8, 'minor', 'morning'], [8, 'minor', 'afternoon'],
+    [9, 'major', 'morning'], [10, 'minor', 'morning'], [11, 'minor', 'afternoon'],
+    [12, 'major', 'morning'], [13, 'minor', 'morning'],
+  ];
+  for (const [offset, pool, slot] of spread) fleet.book(addDays(t, offset), pool, slot);
+  return byAgent;
+});
+const bookedByAgentToday: SampleBooking[] = board();
 
 // ---------------------------------------------------------------------------
 // Meera's existing open booking (E4). A dealer-channel booking, so the demo
@@ -529,29 +575,207 @@ const insertLead = db.prepare(
   `INSERT INTO leads
      (mobile_number, reason, customer_id, vehicle_registration, vehicle_model,
       requested_date, requested_slot, requested_pool, crm_snapshot, caller_words,
-      session_id, created_at)
-   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+      session_id, created_at, status, outcome, note, closed_by, closed_at)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 );
 
-for (const l of leads) {
+/** Today's calls came in through the morning; never before midnight, never after now. */
+const START_OF_DAY = at(TODAY, '00:00');
+const earlierToday = (minutesAgo: number) =>
+  new Date(Math.max(START_OF_DAY.getTime(), now.getTime() - minutesAgo * 60_000));
+
+type Closed = { outcome: string; by: string; note?: string; afterMin: number };
+type LeadRow = SeedLead & { created: Date; closed?: Closed; sessionId?: string | null };
+
+function writeLead(l: LeadRow): number {
   const customer = findCustomer.get(l.mobile) as { id: number } | undefined;
   const vehicle = l.registration
     ? (findVehicle.get(l.registration) as { model: string } | undefined)
     : undefined;
-  insertLead.run(
-    l.mobile,
-    l.reason,
-    customer?.id ?? null,
-    l.registration,
-    vehicle?.model ?? null,
-    l.requestedDate ?? null,
-    l.requestedSlot ?? null,
-    l.requestedPool ?? null,
-    l.crm ? JSON.stringify(l.crm) : null,
-    l.callerWords ?? null,
-    NOW,
+  let closedAt: Date | null = null;
+  if (l.closed) {
+    closedAt = new Date(Math.min(now.getTime(), l.created.getTime() + l.closed.afterMin * 60_000));
+  }
+  return Number(
+    insertLead.run(
+      l.mobile,
+      l.reason,
+      customer?.id ?? null,
+      l.registration,
+      vehicle?.model ?? null,
+      l.requestedDate ?? null,
+      l.requestedSlot ?? null,
+      l.requestedPool ?? null,
+      l.crm ? JSON.stringify(l.crm) : null,
+      l.callerWords ?? null,
+      l.sessionId ?? null,
+      timestamp(l.created),
+      l.closed ? 'done' : 'open',
+      l.closed?.outcome ?? null,
+      l.closed?.note ?? null,
+      l.closed?.by ?? null,
+      closedAt ? timestamp(closedAt) : null,
+    ).lastInsertRowid,
   );
 }
+
+// ---------------------------------------------------------------------------
+// Conversations — this morning's calls as the agent would have had them, with
+// the transcript the Conversations page shows. Written out by hand, in the
+// templates' voice; no model is involved.
+// ---------------------------------------------------------------------------
+
+const insertSession = db.prepare(
+  `INSERT INTO sessions (id, state, data, started_at, updated_at, ended_at)
+   VALUES (?, 'ended', ?, ?, ?, ?)`,
+);
+const insertLine = db.prepare(
+  `INSERT INTO transcripts (session_id, turn_index, speaker, text, created_at) VALUES (?, ?, ?, ?, ?)`,
+);
+const spoken = (m: string) => `${m.slice(0, 5)} ${m.slice(5)}`;
+const centreName = centres[0]!.name;
+
+let sessionSeq = 0;
+function conversation(
+  started: Date,
+  data: Record<string, unknown> & { callerNumber: string },
+  lines: Array<['agent' | 'caller', string]>,
+): string {
+  const id = `seed-${TODAY}-${String(++sessionSeq).padStart(2, '0')}`;
+  const ended = new Date(started.getTime() + lines.length * 8_000);
+  insertSession.run(
+    id,
+    JSON.stringify({ centreId: 1, startedAt: timestamp(started), pushback: 0, otpAttempts: 0, ...data }),
+    timestamp(started),
+    timestamp(ended),
+    timestamp(ended),
+  );
+  lines.forEach(([speaker, text], i) =>
+    insertLine.run(id, i, speaker, text, timestamp(new Date(started.getTime() + i * 8_000))),
+  );
+  return id;
+}
+const hello = (mobile: string): ['agent', string] => [
+  'agent',
+  `${centreName}. I'm the booking assistant, an AI. You're calling from ${spoken(mobile)}, is that the number the car is registered under?`,
+];
+
+const SLOT_TIME = { morning: '8:30', afternoon: '2' } as const;
+const dayName = (d: IsoDate) =>
+  ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][weekdayOf(d)]!;
+
+const writeAll = db.transaction(() => {
+  // The agent's own bookings for tomorrow, made this morning.
+  bookedByAgentToday.forEach((b, k) => {
+    const started = earlierToday(150 - k * 25);
+    const first = b.name.split(' ')[0];
+    const fault = b.pool === 'complaint';
+    conversation(
+      started,
+      {
+        callerNumber: b.mobile,
+        customerName: b.name,
+        model: b.model,
+        registration: b.registration,
+        bookingReference: b.reference,
+        bookingDate: b.date,
+        dropSlot: b.slot,
+        pool: b.pool,
+      },
+      [
+        hello(b.mobile),
+        ['caller', 'Yes, that is me.'],
+        ['agent', `Got it, the ${b.model}. Is anything actually wrong with the car?`],
+        ['caller', fault ? 'There is a grinding noise when I brake.' : 'No, it runs fine. Just the regular service.'],
+        ['agent', fault ? 'Noted, they will check the brakes. When would you like to bring it in?' : 'When would you like to bring it in?'],
+        ['caller', `Tomorrow ${b.slot === 'morning' ? 'morning' : 'afternoon'}.`],
+        [
+          'agent',
+          `Done. ${dayName(b.date)}, drop at ${SLOT_TIME[b.slot]}, ${b.slot === 'morning' && !fault ? 'back the same evening' : 'collect it the next day'}. ` +
+            `The reference is on its way by text. Thanks ${first}.`,
+        ],
+      ],
+    );
+  });
+
+  // Today's follow-ups (the ten above, spread over the morning), seven of them
+  // with the call that raised them.
+  const calls: Partial<Record<string, Array<['agent' | 'caller', string]>>> = {
+    number_not_found: [
+      ['caller', 'Yes. I want to book a service for my car.'],
+      ['agent', "I can't find a car under this number. I've passed your details to the team and they'll call you back today."],
+    ],
+    missing_required_field: [
+      ['caller', 'Yes. Need to get the Kwid serviced this week.'],
+      ['agent', "Some details on the Kwid are missing, so I can't book it from here. The team will call you today."],
+    ],
+    another_problem: [
+      ['caller', "Yes. The car won't start at all, it's sitting in my building basement. I need someone to come out."],
+      ['agent', "That needs a person rather than a booking. I've asked customer care to call you right away, and I'm texting you their number."],
+    ],
+    free_service_not_bookable: [
+      ['caller', 'Yes. I think the free service is still pending on the Altroz?'],
+      ['agent', "The free service window on the Altroz has closed. I've asked the team to call you about it today, and I'm texting you their number."],
+    ],
+    existing_open_booking: [
+      ['caller', 'Yes. Can I book the Tiago in for Friday?'],
+      ['agent', "The Tiago already has a booking with us. I've asked reception to call you about changing it."],
+    ],
+    same_day_demanded: [
+      ['caller', 'Yes. I need it back the same evening, I have to drive to Jaipur the next morning.'],
+      ['agent', "A same-evening return needs a morning drop, and that day's mornings are taken. I've asked the service manager to call you."],
+    ],
+  };
+  const done: Partial<Record<number, Closed>> = {
+    1: { outcome: 'will_call_back', by: 'Aman', note: 'Asked them to confirm the car model', afterMin: 30 },
+    7: { outcome: 'booked', by: 'Deepak', note: 'Moved to Friday morning', afterMin: 25 },
+    8: { outcome: 'no_answer', by: 'Rajesh', afterMin: 20 },
+  };
+  const seen = new Set<string>();
+  leads.forEach((l, k) => {
+    const created = earlierToday(140 - k * 13);
+    const lines = !seen.has(l.reason) ? calls[l.reason] : undefined;
+    let sessionId: string | null = null;
+    if (lines) {
+      seen.add(l.reason);
+      sessionId = conversation(
+        new Date(created.getTime() - lines.length * 8_000),
+        {
+          callerNumber: l.mobile,
+          ...(l.registration ? { registration: l.registration } : {}),
+          leadReason: l.reason,
+          lastCallerWords: l.callerWords,
+        },
+        [hello(l.mobile), ...lines],
+      );
+    }
+    writeLead({ ...l, created, closed: done[k], sessionId });
+  });
+
+  // The week before: mostly closed, two still waiting from yesterday.
+  const older: Array<[number, string, SeedLead, Closed?]> = [
+    [1, '08:10', { reason: 'another_problem', mobile: '9810033003', registration: 'KA05MN0918', callerWords: 'Is the Baleno covered for a clutch replacement under warranty?' }],
+    [1, '17:35', { reason: 'number_not_found', mobile: '9876543210', registration: null, callerWords: 'Hi, I need to book a service for my Creta.' }],
+    [1, '18:10', { reason: 'free_service_not_bookable', mobile: '9810044004', registration: 'MH12PQ3344', callerWords: 'Can I still get the free service?' }, { outcome: 'booked', by: 'Ritu', note: 'Booked for next week, morning drop', afterMin: 860 }],
+    [1, '19:02', { reason: 'existing_open_booking', mobile: '9810066006', registration: 'GJ01TU2255', callerWords: 'Can I change my booking to the weekend?' }, { outcome: 'will_call_back', by: 'Deepak', note: 'Confirming by noon', afterMin: 820 }],
+    [2, '10:15', { reason: 'number_not_found', mobile: '9988776655', registration: null, callerWords: 'Book my i10 please.' }, { outcome: 'wrong_number', by: 'Aman', afterMin: 145 }],
+    [2, '11:30', { reason: 'another_problem', mobile: '9810100010', registration: 'KL07BC4433', callerWords: 'Do you have a loaner car?' }, { outcome: 'not_interested', by: 'Sana', note: 'Only wanted pickup and drop', afterMin: 95 }],
+    [2, '15:20', { reason: 'same_day_demanded', mobile: '9810022002', registration: 'DL8CAF2213', callerWords: 'Need it back tonight.' }, { outcome: 'booked', by: 'Rajesh', afterMin: 100 }],
+    [3, '09:40', { reason: 'free_service_not_bookable', mobile: '9810077007', registration: 'TN09VW6600', callerWords: 'Is my free service pending?' }, { outcome: 'no_answer', by: 'Ritu', afterMin: 90 }],
+    [3, '10:05', { reason: 'missing_required_field', mobile: '9810099009', registration: 'UP16ZA8899', callerWords: 'Kwid service please.' }, { outcome: 'booked', by: 'Aman', note: 'Type fixed in the CRM, booked Friday', afterMin: 385 }],
+    [3, '12:15', { reason: 'another_problem', mobile: '9810055005', registration: 'PB10RS7788', callerWords: 'Do you sell tyres?' }, { outcome: 'will_call_back', by: 'Sana', afterMin: 45 }],
+    [4, '09:05', { reason: 'existing_open_booking', mobile: '9810066006', registration: 'GJ01TU2255', callerWords: 'Can I come Thursday instead?' }, { outcome: 'booked', by: 'Deepak', afterMin: 75 }],
+    [4, '14:30', { reason: 'forced_full_day', mobile: '9810111011', registration: 'KA01AA1234', callerWords: 'Only Sunday works for me.' }, { outcome: 'no_answer', by: 'Rajesh', afterMin: 210 }],
+    [4, '16:45', { reason: 'free_service_not_bookable', mobile: '9810088008', registration: 'RJ14XY1177', callerWords: "Why can't I get the free service?" }, { outcome: 'not_interested', by: 'Ritu', afterMin: 1035 }],
+    [5, '09:30', { reason: 'number_not_found', mobile: '9123456780', registration: null, callerWords: 'Service for my Nexon.' }, { outcome: 'booked', by: 'Aman', note: 'Added as a new customer', afterMin: 135 }],
+    [5, '13:10', { reason: 'another_problem', mobile: '9810033003', registration: 'KA05MN0918', callerWords: 'Do you do ceramic coating?' }, { outcome: 'no_answer', by: 'Sana', afterMin: 110 }],
+    [6, '10:00', { reason: 'same_day_demanded', mobile: '9810044004', registration: 'MH12PQ3344', callerWords: 'Can it be back by evening?' }, { outcome: 'will_call_back', by: 'Rajesh', afterMin: 150 }],
+  ];
+  for (const [daysAgo, hhmm, l, closed] of older) {
+    writeLead({ ...l, created: at(addDays(TODAY, -daysAgo), hhmm), closed });
+  }
+});
+writeAll();
 
 // ---------------------------------------------------------------------------
 // Knowledge bank — per-dealer org facts only, no customer data (D10).

@@ -13,6 +13,8 @@ dist
 # The laptop's database. Production data lives on the Fly volume.
 service.db
 service.db-*
+accounts.db*
+orgs
 
 tests
 vitest.config.ts
