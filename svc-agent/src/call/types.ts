@@ -92,5 +92,10 @@ export type TurnResult = {
   expectsDigits?: boolean;
   bookingReference?: string;
   leadReason?: LeadReason;
+  /**
+   * What the turn was understood as, in labels only — never the caller's
+   * words — for the voice layer's log line.
+   */
+  understood?: string;
 };
 

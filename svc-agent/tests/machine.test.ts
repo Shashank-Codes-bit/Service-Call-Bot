@@ -698,3 +698,38 @@ describe('DEMO_MODE — a stranger can book', () => {
     expect(turns.at(-1)!.leadReason).toBe('number_not_found');
   });
 });
+
+describe('a voice line\'s "yes" with stray words (live call, 2026-10-04)', () => {
+  // Over Vapi a plain yes to the greeting arrived as "Yes. The car is it
+  // should have the same number." The model flagged an incident as well, and
+  // the call was handed to the team and ended. At the greeting, the answer to
+  // the question we asked wins.
+  const saysYesAndEscalates = {
+    classify: async (req: { utterance: string }) => ({ callerWords: req.utterance, yesNo: 'yes' as const, intent: 'another_problem' as const }),
+  };
+
+  it('identifies the caller rather than ending the call', async () => {
+    const first = await startCall(db, '9810011001', MONDAY);
+    const t = await handleTurn(db, { ...deps, classifier: saysYesAndEscalates }, first.sessionId, 'Yes. The car is it should have the same number.', MONDAY);
+    expect(t.ended).toBe(false);
+    expect(t.state).toBe('open_turn');
+    expect(t.reply).toMatch(/Nexon/);
+    expect(t.understood).toBe('greeting → yes, another_problem (escalation ignored: answering the question)');
+  });
+
+  it('still escalates a real incident once the caller is identified', async () => {
+    const first = await startCall(db, '9810011001', MONDAY);
+    await handleTurn(db, deps, first.sessionId, 'Yes.', MONDAY);
+    const t = await handleTurn(db, deps, first.sessionId, "The car won't start, it's in my basement.", MONDAY);
+    expect(t.ended).toBe(true);
+    expect(t.leadReason).toBe('another_problem');
+  });
+
+  it('still escalates at the greeting when there is no yes', async () => {
+    const escalates = { classify: async (req: { utterance: string }) => ({ callerWords: req.utterance, intent: 'another_problem' as const }) };
+    const first = await startCall(db, '9810011001', MONDAY);
+    const t = await handleTurn(db, { ...deps, classifier: escalates }, first.sessionId, 'My car has broken down on the highway.', MONDAY);
+    expect(t.ended).toBe(true);
+    expect(t.leadReason).toBe('another_problem');
+  });
+});

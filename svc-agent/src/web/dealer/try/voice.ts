@@ -22,6 +22,64 @@ export type VoiceEvents = {
 
 export type VoiceCall = { stop: () => void };
 
+/** One bubble: a speaker's consecutive pieces, the last perhaps still being spoken. */
+export type Bubble = { who: 'agent' | 'caller' | 'sms'; text: string; interim: boolean };
+
+/**
+ * Vapi sends what the agent says as several final pieces, one per phrase, and
+ * the caller's words arrive the same way. Shown one per box, a single sentence
+ * read as five. Consecutive pieces from the same speaker form one bubble; a
+ * caller's in-progress words sit at the end of their bubble until final.
+ */
+export function groupLines(lines: Line[]): Bubble[] {
+  const out: Bubble[] = [];
+  for (const l of lines) {
+    const interim = 'interim' in l && Boolean(l.interim);
+    const last = out.at(-1);
+    if (l.who !== 'sms' && last && last.who === l.who && !last.interim) {
+      last.text = `${last.text} ${l.text}`.replace(/\s+/g, ' ').trim();
+      last.interim = interim;
+    } else {
+      out.push({ who: l.who, text: l.text.trim(), interim });
+    }
+  }
+  return out;
+}
+
+/** A sentence for whatever shape the SDK's error arrived in. Never "[object Object]". */
+export function errorText(e: unknown): string {
+  const pick = (v: unknown): string | undefined => {
+    if (typeof v === 'string' && v.trim()) return v.trim();
+    if (!v || typeof v !== 'object') return undefined;
+    const o = v as Record<string, unknown>;
+    for (const k of ['errorMsg', 'message', 'msg', 'error', 'reason', 'type']) {
+      const found = pick(o[k]);
+      if (found) return found;
+    }
+    return undefined;
+  };
+  const text = pick(e);
+  if (text) return text.slice(0, 160);
+  try {
+    return JSON.stringify(e).slice(0, 160);
+  } catch {
+    return 'unknown error';
+  }
+}
+
+/** The meeting ending — Vapi hanging up after the agent's goodbye — is not a failure. */
+export function isNormalEnd(e: unknown): boolean {
+  return /ejected|meeting (has )?ended|meeting-ended|call-ended|call has ended|left-meeting/i.test(
+    (() => {
+      try {
+        return `${errorText(e)} ${JSON.stringify(e)}`;
+      } catch {
+        return errorText(e);
+      }
+    })(),
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Vapi
 // ---------------------------------------------------------------------------
@@ -60,8 +118,10 @@ export async function startVapi(
   vapi.on('speech-end', () => on.status('listening'));
   vapi.on('call-end', () => on.status('ended'));
   vapi.on('error', (e: unknown) => {
-    const m = (e as { error?: { message?: string }; message?: string })?.error?.message ?? (e as Error)?.message;
-    on.error(m ? `The voice line failed: ${m}` : 'The voice line failed.');
+    // The SDK reports the call being hung up — by us, after "Goodbye." — as an
+    // error too. That is the call ending, not failing.
+    if (isNormalEnd(e)) return on.status('ended');
+    on.error(`The voice line failed: ${errorText(e)}`);
     on.status('ended');
   });
   vapi.on('message', (m: VapiMessage) => {

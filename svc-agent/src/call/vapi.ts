@@ -153,9 +153,14 @@ export function vapiApi(
         reply = '';
       } else {
         const session = loadSession(db, sessionId);
-        reply = session?.state === 'ended'
-          ? ''
-          : (await handleTurn(db, deps, sessionId, utterance)).reply;
+        if (session?.state === 'ended') {
+          reply = '';
+        } else {
+          const t = await handleTurn(db, deps, sessionId, utterance);
+          reply = t.reply;
+          // Labels only — what the agent understood, never what was said.
+          if (t.understood) console.log(`  vapi turn  ${externalId.slice(0, 8)} ${t.understood}${t.ended ? ' · call ended' : ''}`);
+        }
       }
       // The conversation is over: say so in the one word the assistant is set
       // to hang up on (vapi-setup.ts), so the line closes with the call.

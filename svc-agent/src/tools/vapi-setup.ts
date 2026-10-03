@@ -13,6 +13,13 @@ import { fileURLToPath } from 'node:url';
 import { config } from '../config.ts';
 
 export const ASSISTANT_NAME = 'Service desk agent';
+
+/** Words a service-booking call turns on, for Deepgram's keyterm prompting. */
+export const KEYTERMS = [
+  'Nexon', 'Swift', 'Creta', 'Fortuner', 'Tiago', 'Altroz', 'Venue', 'Baleno', 'Kwid', 'Ertiga', 'i20', 'Curvv', 'XUV',
+  'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday',
+  'morning', 'afternoon', 'service', 'booking', 'registration',
+];
 const API = 'https://api.vapi.ai';
 
 /**
@@ -37,7 +44,21 @@ export function assistantPayload({ publicUrl, callSecret }: { publicUrl: string;
       messages: [{ role: 'system', content: 'svc-agent org={{org}} caller={{callerNumber}}' }],
     },
     credentials: [{ provider: 'custom-llm', apiKey: callSecret }],
-    transcriber: { provider: 'deepgram', model: 'nova-3', language: 'en-IN' },
+    transcriber: {
+      provider: 'deepgram',
+      model: 'nova-3',
+      language: 'en-IN',
+      // The words a booking turns on, so "Nexon" isn't heard as "next one".
+      keyterm: KEYTERMS,
+    },
+    // Hearing, tuned after the first live call (2026-10-04), where the agent's
+    // own voice and a long greeting garbled a plain "yes":
+    // - two words to interrupt the agent, so an echo, a cough or "um" doesn't;
+    stopSpeakingPlan: { numWords: 2, voiceSeconds: 0.3, backoffSeconds: 1 },
+    // - a moment's patience before answering, so a caller isn't cut off mid-thought;
+    startSpeakingPlan: { waitSeconds: 0.6, smartEndpointingPlan: { provider: 'livekit' } },
+    // - background noise removed before transcription.
+    backgroundSpeechDenoisingPlan: { smartDenoisingPlan: { enabled: true } },
     voice: { provider: 'azure', voiceId: 'en-IN-NeerjaNeural' },
     // A demo call, not an open line: five minutes is a whole booking twice over.
     maxDurationSeconds: 300,
