@@ -11,6 +11,10 @@ export type Me = {
   today: string;
   turnsToday?: number;
   turnCap?: number;
+  /** This centre's demo switch: on, its activity goes back to the sample every night. */
+  demo: boolean;
+  /** Whether the server runs demo centres at all (DEMO_MODE). */
+  demoAvailable: boolean;
 };
 
 export type DayBooking = {
@@ -271,6 +275,8 @@ export const api = {
   signup: (centreName: string, userId: string, password: string) =>
     request<Me>('/auth/signup', json('POST', { centreName, userId, password })),
   logout: () => request<{ ok: true }>('/auth/logout', { method: 'POST' }),
+  setDemo: (demo: boolean) => request<Me>('/auth/demo', json('PUT', { demo })),
+  resetDemo: () => request<{ ok: true; bookings: number; leads: number }>('/auth/demo/reset', { method: 'POST' }),
 
   summary: () => request<Summary>('/api/summary'),
   vehicles: () => request<{ id: number; customer_name: string; mobile_number: string; model: string }[]>('/api/vehicles'),

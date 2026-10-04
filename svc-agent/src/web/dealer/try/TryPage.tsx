@@ -1,7 +1,17 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { dow, SLOT } from '../ui.tsx';
 import { browserVoiceSupported, groupLines, startBrowserVoice, startVapi, type Line, type Status, type VoiceCall } from './voice.ts';
 
-type Caller = { name: string; model: string | null; mobile: string; shows: string };
+type Caller = {
+  name: string;
+  model: string | null;
+  mobile: string;
+  shows: string;
+  /** Their first open booking, if any. */
+  booked: { date: string; slot: 'morning' | 'afternoon' } | null;
+  /** False when every car of theirs is booked: the agent says so and the call ends (D13). */
+  canBook: boolean;
+};
 type Centre = {
   slug: string;
   name: string;
@@ -11,7 +21,8 @@ type Centre = {
   opens: string;
   closes: string;
   callers: Caller[];
-  anyNumber: boolean;
+  /** A demo centre: a visitor can add a made-up caller. */
+  demo: boolean;
   voice: { provider: 'vapi'; publicKey: string; assistantId: string } | { provider: 'browser' };
 };
 type Turn = { sessionId: string; reply: string; ended: boolean; sms?: string[] };
@@ -23,13 +34,19 @@ async function post<T>(path: string, body: unknown): Promise<T> {
   return data;
 }
 
-const ANOTHER = '';
 const phone = (m: string) => `${m.slice(0, 5)} ${m.slice(5)}`;
 /** "09:00" → "9 am", "19:00" → "7 pm". */
 const hour = (hhmm: string) => {
   const [h, m] = hhmm.split(':').map(Number) as [number, number];
   return `${h % 12 || 12}${m ? `:${String(m).padStart(2, '0')}` : ''} ${h < 12 ? 'am' : 'pm'}`;
 };
+
+/** "already booked Fri 8:30", or for two cars with one booked, "one car booked Fri 8:30". */
+function bookedText(c: Caller): string | undefined {
+  if (!c.booked) return undefined;
+  const when = `${dow(c.booked.date)} ${SLOT[c.booked.slot].time}`;
+  return c.canBook ? `${c.shows} (one car booked ${when})` : `already booked ${when}`;
+}
 
 /**
  * The page a centre shares: talk to its agent the way a customer would. Not
@@ -39,7 +56,7 @@ const hour = (hhmm: string) => {
 export function TryPage({ slug }: { slug: string }) {
   const [centre, setCentre] = useState<Centre | null>();
   const [pick, setPick] = useState<string>();
-  const [typed, setTyped] = useState('');
+  const [adding, setAdding] = useState(false);
   const [mode, setMode] = useState<'voice' | 'chat'>();
   const [status, setStatus] = useState<Status>();
   const [lines, setLines] = useState<Line[]>([]);
@@ -58,7 +75,7 @@ export function TryPage({ slug }: { slug: string }) {
         setCentre(c);
         if (c) {
           document.title = `${c.name} · Talk to the agent`;
-          setPick(c.callers[0]?.mobile ?? ANOTHER);
+          setPick((c.callers.find((x) => x.canBook) ?? c.callers[0])?.mobile);
         }
       }, () => setCentre(null));
     return () => call.current?.stop();
@@ -81,7 +98,7 @@ export function TryPage({ slug }: { slug: string }) {
     );
   }
 
-  const number = pick === ANOTHER ? typed.replace(/\D/g, '') : (pick ?? '');
+  const number = pick ?? '';
   const caller = centre.callers.find((c) => c.mobile === number);
   const live = status && status !== 'ended';
   const vapi = centre.voice.provider === 'vapi' && !usingBrowser ? centre.voice : undefined;
@@ -98,6 +115,20 @@ export function TryPage({ slug }: { slug: string }) {
     start: () => post<Turn>(`/public/${slug}/chat/start`, { callerNumber: number }),
     turn: (sessionId: string, utterance: string) => post<Turn>(`/public/${slug}/chat/turn`, { sessionId, utterance }),
   };
+
+  async function newCaller() {
+    setAdding(true);
+    setError(undefined);
+    try {
+      const c = await post<Caller>(`/public/${slug}/demo-caller`, {});
+      setCentre((x) => x && { ...x, callers: [c, ...x.callers] });
+      setPick(c.mobile);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setAdding(false);
+    }
+  }
 
   async function talk() {
     if (number.length !== 10 || live) return;
@@ -218,20 +249,19 @@ export function TryPage({ slug }: { slug: string }) {
                   {centre.callers.map((c) => (
                     <option key={c.mobile} value={c.mobile}>
                       {c.name}
-                      {c.model ? ` · ${c.model}` : ''} · {c.shows}
+                      {c.model ? ` · ${c.model}` : ''} · {bookedText(c) ?? c.shows}
                     </option>
                   ))}
-                  {centre.anyNumber && <option value={ANOTHER}>My own number…</option>}
                 </select>
-                {pick === ANOTHER && (
-                  <input
-                    className="field nums"
-                    inputMode="numeric"
-                    placeholder="10-digit mobile"
-                    aria-label="Your mobile number"
-                    value={typed}
-                    onChange={(e) => setTyped(e.target.value)}
-                  />
+                {centre.demo && (
+                  <button type="button" className="linklike small" style={{ justifySelf: 'start' }} onClick={newCaller} disabled={adding}>
+                    {adding ? 'Adding…' : '+ New demo caller'}
+                  </button>
+                )}
+                {error && (
+                  <p className="notice alert" role="alert">
+                    {error}
+                  </p>
                 )}
               </div>
               {vapi || canBrowser ? (
@@ -245,7 +275,8 @@ export function TryPage({ slug }: { slug: string }) {
                 <p className="notice alert">This browser can’t do voice. Chrome or Edge can, or chat below.</p>
               )}
               <p className="modehint">
-                {caller ? `You’ll be ${caller.name}, ${phone(caller.mobile)}. ` : number.length === 10 ? `You’ll call from ${phone(number)}; a new number gets a demo car. ` : ''}
+                {caller ? `You’ll be ${caller.name}, ${phone(caller.mobile)}. ` : ''}
+                {caller && !caller.canBook ? 'Already booked, so the agent will say so and end the call. ' : ''}
                 Uses your microphone. {vapi ? 'Speaks Indian English.' : 'Uses your browser’s own voice.'}
                 {' '}Best with earphones, so the agent doesn’t hear itself. Let it finish, then answer.
               </p>

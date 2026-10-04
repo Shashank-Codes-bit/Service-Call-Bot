@@ -5,8 +5,12 @@
  *   docker compose exec app npm run vapi:setup
  *
  * Needs VAPI_PRIVATE_KEY, CALL_API_SECRET and PUBLIC_URL in .env. Prints the
- * assistant id to put in VAPI_ASSISTANT_ID. Nothing here is printed back but
- * that id: the keys go to Vapi's API and nowhere else.
+ * assistant id to put in VAPI_ASSISTANT_ID, and the voice it set. Nothing else
+ * is printed: the keys go to Vapi's API and nowhere else.
+ *
+ * The voice: VAPI_VOICE (provider:voiceId) when set; otherwise whatever the
+ * assistant already has — so a voice picked in Vapi's dashboard survives a
+ * re-run — and Azure's Neerja for a new assistant.
  */
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,6 +26,38 @@ export const KEYTERMS = [
 ];
 const API = 'https://api.vapi.ai';
 
+export type Voice = { provider: string; voiceId: string; model?: string } & Record<string, unknown>;
+
+export const DEFAULT_VOICE: Voice = { provider: 'azure', voiceId: 'en-IN-NeerjaNeural' };
+
+/** Vapi's voice providers, as its API names them. */
+const VOICE_PROVIDERS = ['azure', '11labs', 'cartesia', 'deepgram', 'openai', 'playht', 'rime-ai', 'lmnt', 'neets', 'vapi', 'hume', 'inworld'];
+
+/** "11labs:abc123" (+ VAPI_VOICE_MODEL) → { provider, voiceId, model }. Anything else is a mistake worth stopping for. */
+export function parseVoice(spec: string, model = ''): Voice {
+  const m = /^([a-z0-9-]+):(\S+)$/.exec(spec.trim());
+  if (!m || !VOICE_PROVIDERS.includes(m[1]!)) {
+    throw new Error(
+      `VAPI_VOICE must be provider:voiceId, e.g. azure:en-IN-NeerjaNeural or 11labs:<voice id> (providers: ${VOICE_PROVIDERS.join(', ')}).`,
+    );
+  }
+  return { provider: m[1]!, voiceId: m[2]!, ...(model.trim() ? { model: model.trim() } : {}) };
+}
+
+/**
+ * The voice to send: the chosen one, else the assistant's current one, else
+ * the default — always with Vapi's phrase-splitting off. Our adapter hands
+ * over each reply as one finished sentence; split at commas and voiced phrase
+ * by phrase, it came out choppy and flat on the first live calls.
+ */
+export function voiceFor(chosen: Voice | undefined, current: unknown): Voice {
+  const have = current && typeof current === 'object' && typeof (current as Voice).provider === 'string' ? (current as Voice) : undefined;
+  const base = chosen ?? have ?? DEFAULT_VOICE;
+  return { ...base, chunkPlan: { enabled: false } };
+}
+
+export const describeVoice = (v: Voice) => `${v.provider} ${v.voiceId}${v.model ? ` (${v.model})` : ''}, whole sentences`;
+
 /**
  * The assistant. Vapi carries the audio; every word the caller hears comes
  * from our state machine through the custom-LLM adapter (`/vapi`).
@@ -33,7 +69,15 @@ const API = 'https://api.vapi.ai';
  * - en-IN on both sides: Deepgram transcribes Indian English, and an Indian
  *   English neural voice answers.
  */
-export function assistantPayload({ publicUrl, callSecret }: { publicUrl: string; callSecret: string }) {
+export function assistantPayload({
+  publicUrl,
+  callSecret,
+  voice = voiceFor(undefined, undefined),
+}: {
+  publicUrl: string;
+  callSecret: string;
+  voice?: Voice;
+}) {
   return {
     name: ASSISTANT_NAME,
     firstMessageMode: 'assistant-speaks-first-with-model-generated-message',
@@ -59,7 +103,7 @@ export function assistantPayload({ publicUrl, callSecret }: { publicUrl: string;
     startSpeakingPlan: { waitSeconds: 0.6, smartEndpointingPlan: { provider: 'livekit' } },
     // - background noise removed before transcription.
     backgroundSpeechDenoisingPlan: { smartDenoisingPlan: { enabled: true } },
-    voice: { provider: 'azure', voiceId: 'en-IN-NeerjaNeural' },
+    voice,
     // A demo call, not an open line: five minutes is a whole booking twice over.
     maxDurationSeconds: 300,
     silenceTimeoutSeconds: 20,
@@ -94,14 +138,25 @@ async function main() {
     process.exit(1);
   }
 
-  const payload = assistantPayload({ publicUrl: config.publicUrl, callSecret: config.callApiSecret });
+  let chosen: Voice | undefined;
+  try {
+    chosen = config.vapiVoice ? parseVoice(config.vapiVoice, config.vapiVoiceModel) : undefined;
+  } catch (e) {
+    console.error((e as Error).message);
+    process.exit(1);
+  }
+
   const list = (await vapi('/assistant?limit=100')) as unknown as Array<{ id: string; name: string }>;
   const existing = (Array.isArray(list) ? list : []).find((a) => a.name === ASSISTANT_NAME);
+  const current = existing && !chosen ? (await vapi(`/assistant/${existing.id}`))['voice'] : undefined;
+  const voice = voiceFor(chosen, current);
+  const payload = assistantPayload({ publicUrl: config.publicUrl, callSecret: config.callApiSecret, voice });
   const saved = existing
     ? await vapi(`/assistant/${existing.id}`, { method: 'PATCH', body: JSON.stringify(payload) })
     : await vapi('/assistant', { method: 'POST', body: JSON.stringify(payload) });
 
   console.log(`${existing ? 'Updated' : 'Created'} the "${ASSISTANT_NAME}" assistant.`);
+  console.log(`Voice: ${describeVoice(voice)}${chosen ? ' (from VAPI_VOICE)' : existing ? ' (kept)' : ''}`);
   console.log(`Add this to .env, then restart:  VAPI_ASSISTANT_ID=${String(saved['id'])}`);
 }
 

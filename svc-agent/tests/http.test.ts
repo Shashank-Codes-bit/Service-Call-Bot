@@ -171,13 +171,17 @@ describe('concurrency — two callers are two conversations', () => {
 });
 
 describe('the chat channel shows SMS only in demo mode', () => {
-  // Chat has no phone, so in DEMO_MODE the reply carries what the phone would
-  // have got. Outside demo that would hand a one-time code to anyone who typed
-  // a number, so it must not appear.
+  // Chat has no phone, so on a demo centre the reply carries what the phone
+  // would have got. Outside demo that would hand a one-time code to anyone who
+  // typed a number, so it must not appear. The centre's demo switch is fixed
+  // when its routers are built (registry.ts), so each case builds its own.
   const toOtp = async () => {
-    const start = await callAuth(request(app).post('/call/start')).send({ callerNumber: '9810011001' });
+    const chat = express();
+    chat.use(express.json());
+    chat.use('/call', requireCallSecret, callApi(db, { classifier: new StubClassifier(), crm: new LocalCrm(db) }));
+    const start = await callAuth(request(chat).post('/call/start')).send({ callerNumber: '9810011001' });
     const say = (utterance: string) =>
-      callAuth(request(app).post('/call/turn')).send({ sessionId: start.body.sessionId, utterance });
+      callAuth(request(chat).post('/call/turn')).send({ sessionId: start.body.sessionId, utterance });
     await say('No, different number.');
     return say('9810044004');
   };

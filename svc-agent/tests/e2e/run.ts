@@ -265,6 +265,18 @@ async function main() {
       await p.waitForSelector('text=Saved and applied');
       await p.keyboard.press('Escape');
     });
+    await check('the demo switch turns off and back on, each with a confirm', async () => {
+      await p.click('button.avatar');
+      await p.click('text=Demo centre · On');
+      await p.waitForSelector('.menu .confirmrow >> text=Turn demo off?');
+      await p.click('.menu .confirmrow >> text=Turn off');
+      await p.waitForSelector('.toast >> text=Demo off');
+      await p.click('button.avatar');
+      await p.click('text=Demo centre · Off');
+      expect((await p.locator('text=Reset demo data now').count()) === 0, 'reset offered on a centre that isn’t a demo');
+      await p.click('.menu .confirmrow >> text=Turn on');
+      await p.waitForSelector('.toast >> text=Demo on');
+    });
 
     // -----------------------------------------------------------------------
     console.log('\nKnowledge');
@@ -368,6 +380,30 @@ async function main() {
       await t.click('text=Send');
       await t.waitForFunction(() => document.querySelectorAll('.captions .msg.agent').length > 1);
     });
+    await check('a booked sample caller says so, and a free one is picked first', async () => {
+      await t.goto(`${B}/try/e2e-motors`);
+      await t.waitForSelector('#try-who');
+      const rohit = (await t.locator('#try-who option[value="9810011001"]').textContent()) ?? '';
+      expect(/already booked \w{3} (8:30|2:00)/.test(rohit), `Rohit reads: ${rohit}`);
+      const picked = await t.locator('#try-who').inputValue();
+      const pickedText = (await t.locator(`#try-who option[value="${picked}"]`).textContent()) ?? '';
+      expect(picked !== '9810011001' && !pickedText.includes('already booked'), `picked: ${pickedText}`);
+      expect(!(await t.locator('text=My own number').count()), 'the old own-number option is still there');
+    });
+    await check('+ New demo caller adds a made-up caller who books by chat', async () => {
+      await t.click('text=+ New demo caller');
+      await t.waitForFunction(() => (document.querySelector('#try-who') as HTMLSelectElement).value.startsWith('9799'));
+      await t.click('text=Prefer typing? Chat instead');
+      await t.waitForSelector('.captions .msg.agent');
+      for (const line of ['Yes.', 'Book it in for Friday.', "No, it's fine.", 'No.', 'Morning.']) {
+        const n = await t.locator('.captions .msg.agent').count();
+        await t.fill('input[aria-label="Your reply"]', line);
+        await t.click('text=Send');
+        await t.waitForFunction((k) => document.querySelectorAll('.captions .msg.agent').length > k, n);
+      }
+      const last = (await t.locator('.captions .msg.agent').last().textContent()) ?? '';
+      expect(last.includes('Done.'), `last line: ${last}`);
+    });
     await check('a browser without its own speech still gets Vapi voice and the chat', async () => {
       const ff = await browser!.newContext();
       await ff.addInitScript('delete window.SpeechRecognition; delete window.webkitSpeechRecognition;');
@@ -382,6 +418,17 @@ async function main() {
     await check('an unknown centre shows Not found', async () => {
       await t.goto(`${B}/try/nowhere-at-all`);
       await t.waitForSelector('text=Not found');
+    });
+    await check('Reset demo data now puts the sample back, and Rohit is free again', async () => {
+      await p.click('button.avatar');
+      await p.click('text=Reset demo data now');
+      await p.click('.menu .confirmrow >> text=Reset now');
+      await p.waitForSelector('.toast >> text=Back to the sample');
+      await t.goto(`${B}/try/e2e-motors`);
+      await t.waitForSelector('#try-who');
+      const rohit = (await t.locator('#try-who option[value="9810011001"]').textContent()) ?? '';
+      expect(!rohit.includes('already booked'), `Rohit still reads: ${rohit}`);
+      expect(!(await t.locator('#try-who option[value^="9799"]').count()), 'the demo caller survived the reset');
     });
     await pub.close();
 

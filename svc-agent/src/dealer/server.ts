@@ -6,6 +6,7 @@ import { addDays, today } from '../shared/dates.ts';
 import { regenerateCapacity } from '../shared/capacity.ts';
 import { Accounts } from '../orgs/accounts.ts';
 import { Registry } from '../orgs/registry.ts';
+import { nightlyResets } from '../orgs/demo.ts';
 import { buildApp } from './app.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -48,12 +49,24 @@ const daily = () => {
 };
 setInterval(daily, 6 * 60 * 60 * 1000).unref();
 
+// Demo centres go back to the sample every night after 3:00 (orgs/demo.ts).
+// Checked every ten minutes, so a server that was down at 3:00 catches up.
+const resets = () => {
+  try {
+    nightlyResets(accounts, registry);
+  } catch (e) {
+    console.error('demo reset failed', e);
+  }
+};
+setInterval(resets, 10 * 60 * 1000).unref();
+
 app.listen(config.port, () => {
   daily();
+  resets();
   const orgs = accounts.list();
   console.log(`Service desk + call API on http://localhost:${config.port}`);
   console.log(`  centres    ${orgs.length} in ${config.dataDir}${adopted === 'adopted' ? ` (moved ${config.dbPath} in as "${config.defaultOrg}"; original kept)` : ''}`);
-  for (const o of orgs) console.log(`             ${o.user_id.padEnd(16)} ${o.name}`);
+  for (const o of orgs) console.log(`             ${o.user_id.padEnd(16)} ${o.name}${config.demoMode && o.demo ? '  (demo: resets nightly)' : ''}`);
   if (orgs.length === 0) console.log('             none yet: open the site and create one, or set ADMIN_PASSWORD');
   console.log(`  classifier ${hasApiKey() ? 'Haiku (live)' : 'stub (no API key)'}`);
   console.log(`  clock      ${config.centreTimezone}, today ${today()}`);

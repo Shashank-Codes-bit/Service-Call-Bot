@@ -396,7 +396,8 @@ changes the very next turn.
 **Talk to the agent (Phase 5).** `/try/<slug>` is the public page each centre
 shares, with no sign-in (`src/web/dealer/try/`, `src/dealer/public.ts`).
 - The visitor calls as one of the sample customers (`SAMPLE_CALLERS` in
-  `db/sample.ts`), or with their own number in DEMO_MODE.
+  `db/sample.ts`), or, on a demo centre, as a made-up "+ New demo caller"
+  (see "Demo centres" below).
 - **Voice through Vapi** when `VAPI_PUBLIC_KEY` and `VAPI_ASSISTANT_ID` are set:
   - the browser starts a Vapi web call with
     `variableValues: { org, callerNumber }`;
@@ -442,13 +443,59 @@ shares, with no sign-in (`src/web/dealer/try/`, `src/dealer/public.ts`).
 
   Re-run it on the VM after deploying; it updates the same assistant.
 
+**Demo centres, nightly reset, and the voice setting (2026-10-04).**
+- **A switch per centre**, in the profile menu ("Demo centre · On/Off", with a
+  confirm). On for a new centre, and for every centre from before the switch
+  (`accounts.db` `orgs.demo`, added with default 1). Under the server-wide
+  `DEMO_MODE`: with that off, no centre is a demo.
+  - Effective demo is `registry.ts`'s `handle.demo`, fixed when a centre's
+    routers are built; `PUT /auth/demo` rebuilds them (`registry.refresh`), so
+    the next request already behaves the new way.
+  - A demo centre: unknown numbers get a demo car (`DemoCrm`), chat echoes
+    SMS, the public page offers "+ New demo caller", and it resets nightly.
+  - A non-demo centre: the public page takes only the sample callers, on
+    chat and on Vapi (a page-named number that isn't a sample is ignored,
+    `vapiApi` `webCaller`), so no one reaches a real customer by naming them.
+- **The nightly reset** (`src/orgs/demo.ts`), once a day after 3:00 centre
+  time (IST, `CENTRE_TIMEZONE`), checked every 10 minutes (so a server down at 3:00 catches up). The
+  first time a centre is seen it is only marked, not reset.
+  - **Replaced with a fresh sample for the day:** customers, cars and service
+    due (with any demo callers), bookings, the booking counter, calls and
+    transcripts, follow-ups, SMS, and the 30-day capacity window.
+  - **Kept:** the centre's name and row, Knowledge entries, Centre essentials,
+    and its weekly places (`capacity_master`, re-applied to the new window).
+  - The sample's transcripts and texts are renamed to the centre's own name.
+  - "Reset demo data now" in the menu (`POST /auth/demo/reset`) does the same
+    and counts as that night's reset. The day's mark is in `accounts.db`
+    `meta` (`demo_reset:<slug>`).
+- **The public page's callers** come with `booked` (their first open booking)
+  and `canBook` (some car still free). Free callers come first and are picked
+  by default; a booked one reads "already booked Fri 8:30" — the agent will
+  say so and end the call (D13). This was the "asked to book, call ended"
+  report: Rohit had a booking left from an earlier test.
+- **"+ New demo caller"** (`POST /public/<slug>/demo-caller`, demo centres
+  only): a made-up name, number (`9799xxxxxx`), car and plate, with a paid
+  service due now, so the call books. At most 50 per centre at a time,
+  cleared by the nightly reset. It replaces "My own number".
+- **The voice** (`vapi:setup`):
+  - `voice.chunkPlan.enabled: false`, so each reply is voiced whole. Vapi's
+    default split it at punctuation, which made it choppy and flat.
+  - `VAPI_VOICE=provider:voiceId` (e.g. `azure:en-IN-NeerjaNeural`,
+    `11labs:<id>`, `cartesia:<id>`) and optional `VAPI_VOICE_MODEL` choose the
+    voice. Unset, a re-run keeps the voice the assistant already has (e.g.
+    picked in Vapi's dashboard); a new assistant gets Neerja. The script
+    prints the voice it set.
+  - To try voices: Vapi dashboard → the assistant → Voice, preview, then save
+    there or copy the ID into `.env` and re-run `vapi:setup`.
+
 **End-to-end check: `npm run e2e`** (in `svc-agent/`, about 15 s). It builds the
 portal, starts a throwaway server (its own temp data, demo mode, the offline
 classifier, placeholder Vapi keys), and drives Chromium through 28 checks:
 sign-in, the board, bookings, follow-ups and CSV, conversations, places,
 knowledge (live mid-call edits, pass-on, expiry, essentials to SMS), the public
 voice page (Vapi SDK loads and reaches api.vapi.ai, the browser-voice booking,
-chat, Not found) and 390 px phone width. Exit code 1 on any failure.
+chat, booked labels, a new demo caller booking by chat, Not found), the demo
+switch and reset-now, and 390 px phone width (32 checks as of 2026-10-04). Exit code 1 on any failure.
 - Run it after any change.
 - It caught the "n is not a constructor" bug when that bug was put back.
 - On a laptop, run `npx playwright install chromium` once first.
@@ -655,6 +702,13 @@ question.
 ---
 
 ## 10. What's left
+
+0. **Before real customers use the public page** (noted 2026-10-04):
+   - hide the live transcript while a Vapi call is on (kept now for testing);
+   - an internal error log the centre or we can read, rather than the
+     container's console;
+   - turn the centre's demo switch off, and `DEMO_MODE` off once no centre
+     needs it.
 
 1. **Deploy to Fly — waiting on the user's "yes"** (billable: one always-on
    `shared-cpu-1x` 512 MB machine + 1 GB volume in `sin`, roughly $4–5/month;

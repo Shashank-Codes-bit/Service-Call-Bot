@@ -15,6 +15,15 @@ type Page = 'today' | 'conversations' | 'followups' | 'knowledge' | 'agent';
 type Route = { page: Page; arg?: string };
 type DrawerState = { kind: 'book'; preset?: BookPreset } | { kind: 'detail'; reference: string } | { kind: 'places' } | null;
 
+/** What the nightly demo reset touches, said the same way wherever it's asked. */
+const RESET_COVERS =
+  'Bookings, calls, follow-ups, texts and demo callers go back to the sample. Knowledge, Centre essentials and places are kept.';
+const DEMO_ASK = {
+  on: { text: `Turn demo on? Every night at 3:00: ${RESET_COVERS}`, yes: 'Turn on' },
+  off: { text: 'Turn demo off? Nothing resets at night any more; everything here stays as it is.', yes: 'Turn off' },
+  reset: { text: `Reset now? ${RESET_COVERS}`, yes: 'Reset now' },
+} as const;
+
 const PAGES: Page[] = ['today', 'conversations', 'followups', 'knowledge', 'agent'];
 
 /** The page lives in the hash, so a reload or the back button stays put. */
@@ -50,6 +59,7 @@ function Portal({ me, fresh, onOut, refreshMe }: { me: Me; fresh: boolean; onOut
   const [route, setRoute] = useState<Route>(readRoute);
   const [drawer, setDrawer] = useState<DrawerState>(null);
   const [menu, setMenu] = useState(false);
+  const [demoAsk, setDemoAsk] = useState<'on' | 'off' | 'reset'>();
   const [version, setVersion] = useState(0);
   const [openCount, setOpenCount] = useState<number>();
   const [banner, setBanner] = useState(fresh);
@@ -101,6 +111,24 @@ function Portal({ me, fresh, onOut, refreshMe }: { me: Me; fresh: boolean; onOut
     return () => document.removeEventListener('keydown', key);
   }, [drawer, menu, openBook]);
 
+  async function demo(ask: 'on' | 'off' | 'reset') {
+    setDemoAsk(undefined);
+    setMenu(false);
+    try {
+      if (ask === 'reset') {
+        await api.resetDemo();
+        changed();
+        say('Back to the sample for today');
+      } else {
+        await api.setDemo(ask === 'on');
+        say(ask === 'on' ? 'Demo on: resets every night at 3:00' : 'Demo off: nothing resets at night');
+      }
+      refreshMe();
+    } catch (e) {
+      say((e as Error).message);
+    }
+  }
+
   async function signOut() {
     await api.logout().catch(() => {});
     onOut();
@@ -148,13 +176,13 @@ function Portal({ me, fresh, onOut, refreshMe }: { me: Me; fresh: boolean; onOut
                 aria-haspopup="menu"
                 aria-expanded={menu}
                 aria-label={`Profile menu for ${me.name}`}
-                onClick={() => setMenu((m) => !m)}
+                onClick={() => { setMenu((m) => !m); setDemoAsk(undefined); }}
               >
                 {me.initials}
               </button>
               {menu && (
                 <>
-                  <div style={{ position: 'fixed', inset: 0, zIndex: 19 }} onClick={() => setMenu(false)} />
+                  <div style={{ position: 'fixed', inset: 0, zIndex: 19 }} onClick={() => { setMenu(false); setDemoAsk(undefined); }} />
                   <div className="menu" role="menu" aria-label="Profile">
                     <div className="whoami">
                       <span className="avatar lg" aria-hidden="true">
@@ -173,6 +201,38 @@ function Portal({ me, fresh, onOut, refreshMe }: { me: Me; fresh: boolean; onOut
                       <span>Your agent</span>
                       <small>/try/{me.slug} · voice and chat to share</small>
                     </button>
+                    {me.demoAvailable && (
+                      <>
+                        <hr />
+                        <button
+                          type="button"
+                          className="item"
+                          role="menuitemcheckbox"
+                          aria-checked={me.demo}
+                          onClick={() => setDemoAsk(me.demo ? 'off' : 'on')}
+                        >
+                          <span>Demo centre · {me.demo ? 'On' : 'Off'}</span>
+                          <small>{me.demo ? 'Resets to the sample every night at 3:00' : 'Your data stays as it is'}</small>
+                        </button>
+                        {me.demo && (
+                          <button type="button" className="item" role="menuitem" onClick={() => setDemoAsk('reset')}>
+                            <span>Reset demo data now</span>
+                            <small>Back to the sample, as at 3:00</small>
+                          </button>
+                        )}
+                        {demoAsk && (
+                          <div className="confirmrow" role="alertdialog" aria-label="Confirm">
+                            {DEMO_ASK[demoAsk].text}
+                            <button type="button" className="btn sm" onClick={() => setDemoAsk(undefined)}>
+                              Cancel
+                            </button>
+                            <button type="button" className={`btn sm ${demoAsk === 'on' ? 'primary' : 'danger'}`} onClick={() => demo(demoAsk)}>
+                              {DEMO_ASK[demoAsk].yes}
+                            </button>
+                          </div>
+                        )}
+                      </>
+                    )}
                     <hr />
                     <button type="button" className="item" role="menuitem" onClick={signOut}>
                       <span>Sign out</span>

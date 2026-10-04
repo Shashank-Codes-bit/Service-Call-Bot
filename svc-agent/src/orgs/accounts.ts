@@ -23,6 +23,12 @@ export type Org = {
   pw_salt: string;
   pw_hash: string;
   daily_turn_cap: number | null;
+  /**
+   * A demo centre: sample callers, the SMS shown in the chat, and its day's
+   * activity reset every night (orgs/demo.ts). On by default; the centre can
+   * switch it off from its profile menu to keep real data.
+   */
+  demo: number;
   created_at: string;
 };
 
@@ -86,6 +92,12 @@ export class Accounts {
       );
       CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     `);
+    // Added after the first centres existed: every existing centre starts as
+    // a demo centre, as everything was demo data when this arrived.
+    const cols = this.db.prepare(`PRAGMA table_info(orgs)`).all() as { name: string }[];
+    if (!cols.some((c) => c.name === 'demo')) {
+      this.db.exec(`ALTER TABLE orgs ADD COLUMN demo INTEGER NOT NULL DEFAULT 1 CHECK (demo IN (0, 1))`);
+    }
   }
 
   orgPath(slug: string): string {
@@ -162,6 +174,19 @@ export class Accounts {
     }
     const { salt, hash } = hashPassword(password);
     this.db.prepare(`UPDATE orgs SET pw_salt = ?, pw_hash = ? WHERE slug = ?`).run(salt, hash, slug);
+  }
+
+  setDemo(slug: string, on: boolean): void {
+    this.db.prepare(`UPDATE orgs SET demo = ? WHERE slug = ?`).run(on ? 1 : 0, slug);
+  }
+
+  /** A small per-key store beside the sign-in records — the nightly reset's "done for today" mark. */
+  getMeta(key: string): string | undefined {
+    return (this.db.prepare(`SELECT value FROM meta WHERE key = ?`).get(key) as { value: string } | undefined)?.value;
+  }
+
+  setMeta(key: string, value: string): void {
+    this.db.prepare(`INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`).run(key, value);
   }
 
   /** The key cookies are signed with: the configured one, else one made once and kept. */

@@ -62,6 +62,13 @@ export const config = {
   vapiAssistantId: str('VAPI_ASSISTANT_ID'),
   /** Only for `npm run vapi:setup`. Never sent anywhere but Vapi's API. */
   vapiPrivateKey: str('VAPI_PRIVATE_KEY'),
+  /**
+   * Only for `npm run vapi:setup`: the assistant's voice as provider:voiceId
+   * (e.g. azure:en-IN-NeerjaNeural, 11labs:<id>, cartesia:<id>), and the
+   * provider's model where it takes one. Unset keeps the voice it has.
+   */
+  vapiVoice: str('VAPI_VOICE'),
+  vapiVoiceModel: str('VAPI_VOICE_MODEL'),
   /** This site's own address, e.g. https://140-238-251-141.sslip.io — Vapi calls back to it. */
   publicUrl: str('PUBLIC_URL').replace(/\/+$/, ''),
 
