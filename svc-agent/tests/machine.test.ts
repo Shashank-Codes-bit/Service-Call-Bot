@@ -402,6 +402,45 @@ describe('the call survives the classifier failing', () => {
   });
 });
 
+describe('the live calls of 2026-10-04, with the model failing', () => {
+  // Both calls went: greeting → "Yes. The car is registered under the same
+  // number." → the bare re-ask, again and again → "Can you help me with
+  // booking a service?" → handed to the team. The model was failing every
+  // turn, and the quick reading — which had heard "yes" — was thrown away.
+  class BrokenClassifier {
+    async classify(): Promise<never> {
+      throw Object.assign(new Error('Connection error.'), { status: undefined });
+    }
+  }
+  const live = () => ({ classifier: new BrokenClassifier() as never, fast: new StubClassifier(), crm: new LocalCrm(db) });
+
+  it('hears the yes and books, as a caller would expect', async () => {
+    const d = live();
+    const first = await startCall(db, '9810011001', MONDAY);
+    const replies: TurnResult[] = [];
+    for (const line of [
+      'Yes. The car is registered under the same number.',
+      'Can you help me with booking a service?',
+    ]) {
+      replies.push(await handleTurn(db, d, first.sessionId, line, MONDAY));
+    }
+    expect(replies[0]!.reply).toContain('Nexon');
+    expect(replies[0]!.reply).not.toMatch(/^Anyway/);
+    expect(replies[1]!.ended).toBe(false);
+    expect(replies[1]!.reply).not.toMatch(/one for the team/);
+  });
+
+  it('reads "help me book" as the booking, not a question about the centre', async () => {
+    const s = new StubClassifier();
+    for (const u of ['Can you help me with booking a service?', 'Can you help me to a new service?', 'Could you book my car in?']) {
+      const c = await s.classify({ state: 'open_turn', utterance: u, today: TODAY });
+      expect(c.outOfBand, u).toBeUndefined();
+    }
+    // A real question about the centre still is one.
+    expect((await s.classify({ state: 'open_turn', utterance: 'Do you service the Curvv?', today: TODAY })).outOfBand).toBe('general');
+  });
+});
+
 describe('every routed exit leaves a usable lead (F2)', () => {
   it('carries the vehicle, the request and the caller words', async () => {
     await call('9810011001', ['Yes.', 'Nexon service.', 'No.', 'No.', 'Thursday.', 'Thursday.', 'Thursday.']);

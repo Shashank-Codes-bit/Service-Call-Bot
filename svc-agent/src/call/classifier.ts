@@ -190,7 +190,10 @@ export class StubClassifier implements Classifier {
     const asksAboutTheCentre =
       /^(do|does|are|is|can|could|would|what|where|when|how)\b/.test(t) &&
       // Not a fault report phrased as a question — those belong to D8.
-      !/\bwrong\b|\bnoise\b|\bnot working\b|\bbroken\b|\bcheck the\b|\bfix\b/.test(t);
+      !/\bwrong\b|\bnoise\b|\bnot working\b|\bbroken\b|\bcheck the\b|\bfix\b/.test(t) &&
+      // Nor a request to book, which is what the call is for: "Can you help
+      // me with booking a service?" read as a question about the centre.
+      !/\bbook(ing|ed)?\b|\bappointment\b|\bschedule\b|\bnew service\b|\bget (it|my car|the car) serviced\b/.test(t);
 
     if (asksAboutTheCentre) {
       out.outOfBand = 'general';
