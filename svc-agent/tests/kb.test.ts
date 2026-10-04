@@ -120,6 +120,7 @@ describe('D10 — never guess, and never drop the caller', () => {
       "No, it's fine.",
       'No.',
       'Morning.',
+      'Yes.',
     ]);
     expect(turns.at(-1)!.bookingReference).toMatch(/^\d{6}-\d{5}$/);
     const added = leads().slice(before);

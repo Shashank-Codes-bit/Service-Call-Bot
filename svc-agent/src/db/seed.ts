@@ -12,7 +12,7 @@ import { addDays, today, timestamp, weekdayOf, type IsoDate } from '../shared/da
 import { nextBookingReference } from '../shared/bookings.ts';
 import { SampleFleet, at, type SampleBooking } from './sample.ts';
 import type { Pool } from '../shared/types.ts';
-import { GREETING, fill, spokenNumber } from '../call/templates.ts';
+import { GREETING, fill, spokenDigits } from '../call/templates.ts';
 import { createKnowledge, saveEssentials } from '../kb/knowledge.ts';
 
 const BOOKING_WINDOW_DAYS = 30; // D5: latest bookable day is 30 days ahead.
@@ -659,7 +659,7 @@ function conversation(
 /** The agent's own opening line, so a sample call reads like a real one. */
 const hello = (mobile: string): ['agent', string] => [
   'agent',
-  fill(GREETING[0], { centre: centreName, number: spokenNumber(mobile) }),
+  fill(GREETING[0], { centre: centreName, last4: spokenDigits(mobile.slice(-4)) }),
 ];
 
 const SLOT_TIME = { morning: '8:30', afternoon: '2' } as const;
@@ -693,9 +693,13 @@ const writeAll = db.transaction(() => {
         ['caller', `Tomorrow ${b.slot === 'morning' ? 'morning' : 'afternoon'}.`],
         [
           'agent',
-          `Done. ${dayName(b.date)}, drop at ${SLOT_TIME[b.slot]}, ${b.slot === 'morning' && !fault ? 'back the same evening' : 'collect it the next day'}. ` +
-            `The reference is on its way by text. Thanks ${first}.`,
+          `So that's ${dayName(b.date)}, drop at ${SLOT_TIME[b.slot]}. ` +
+            `It's back ${b.slot === 'morning' && !fault ? 'the same evening' : 'the next day'}. Shall I book it?`,
         ],
+        ['caller', 'Yes please.'],
+        ['agent', "Done, you're booked in. The reference is on its way by text. Anything else I can help with?"],
+        ['caller', "No, that's all."],
+        ['agent', `Thanks ${first}, see you ${dayName(b.date)}.`],
       ],
     );
   });

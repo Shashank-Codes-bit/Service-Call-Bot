@@ -63,7 +63,7 @@ const count = (sql: string, slug = 'centre-a', ...args: unknown[]) =>
 async function bookByChat(slug: string, mobile: string, model: string) {
   const start = await request(app).post(`/public/${slug}/chat/start`).send({ callerNumber: mobile }).expect(200);
   let last = start;
-  for (const line of ['Yes.', `Book the ${model} in for Friday.`, "No, it's fine.", 'No.', 'Morning.']) {
+  for (const line of ['Yes.', `Book the ${model} in for Friday.`, "No, it's fine.", 'No.', 'Morning.', 'Yes.']) {
     last = await request(app).post(`/public/${slug}/chat/turn`).send({ sessionId: start.body.sessionId, utterance: line }).expect(200);
   }
   return last.body as { reply: string; ended: boolean; bookingReference?: string };

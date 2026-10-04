@@ -11,6 +11,7 @@ import { StubClassifier } from '../src/call/classifier.ts';
 import { LocalCrm } from '../src/call/crm.ts';
 import { callIdentity, DAILY_CAP_LINE, GOODBYE } from '../src/call/vapi.ts';
 import { assistantPayload } from '../src/tools/vapi-setup.ts';
+import { printCalls } from '../src/tools/calls.ts';
 import { config } from '../src/config.ts';
 
 /**
@@ -77,7 +78,7 @@ describe('the typed and browser-voice conversation', () => {
   it('books end to end, and the booking lands on that centre only', async () => {
     const start = await request(app).post('/public/centre-a/chat/start').send({ callerNumber: '9810011001' }).expect(200);
     expect(start.body.reply).toContain('Centre A');
-    for (const line of ['Yes.', 'Book the Nexon in for Friday.', "No, it's fine.", 'No.', 'Morning.']) {
+    for (const line of ['Yes.', 'Book the Nexon in for Friday.', "No, it's fine.", 'No.', 'Morning.', 'Yes.']) {
       await say('centre-a', start.body.sessionId, line);
     }
     expect(bookings('centre-a')).toBeGreaterThan(bookings('centre-b'));
@@ -132,7 +133,12 @@ describe('the Vapi web call', () => {
       msgs.push({ role: 'user', content: line });
       await vapi('web-1', msgs).expect(200);
     }
-    msgs.push({ role: 'user', content: 'Morning.' });
+    for (const line of ['Morning.', 'Yes.']) {
+      msgs.push({ role: 'user', content: line });
+      // Booked, but not over: the caller is asked if there's anything else.
+      expect(reply(await vapi('web-1', msgs).expect(200))).not.toContain(GOODBYE);
+    }
+    msgs.push({ role: 'user', content: "No, that's all, thanks." });
     const last = await vapi('web-1', msgs).expect(200);
     // The finished call ends with the word the assistant hangs up on.
     expect(reply(last).endsWith(GOODBYE)).toBe(true);
@@ -177,5 +183,65 @@ describe('vapi:setup', () => {
     expect(p.startSpeakingPlan.waitSeconds).toBeGreaterThanOrEqual(0.5);
     expect(p.transcriber.keyterm).toEqual(expect.arrayContaining(['Nexon', 'Friday', 'morning']));
     expect(p.backgroundSpeechDenoisingPlan.smartDenoisingPlan.enabled).toBe(true);
+  });
+});
+
+describe('why a call ended (Vapi end-of-call report)', () => {
+  const report = (callId: string, extra: Record<string, unknown> = {}) => ({
+    message: {
+      type: 'end-of-call-report',
+      endedReason: 'customer-ended-call',
+      durationSeconds: 94.6,
+      call: { id: callId, assistantOverrides: { variableValues: { org: 'centre-b', callerNumber: '9810011001' } } },
+      ...extra,
+    },
+  });
+
+  it('logs the reason, keeps it on the call, and closes a call left open', async () => {
+    // A call that stopped mid-way: the caller hung up at the readback.
+    await request(app)
+      .post('/vapi/chat/completions')
+      .set('authorization', `Bearer ${SECRET}`)
+      .send({ stream: false, call: { id: 'end-1' }, messages: [{ role: 'system', content: 'svc-agent org=centre-b caller=9810011001' }] })
+      .expect(200);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    await request(app).post('/vapi/events').set('x-vapi-secret', SECRET).send(report('end-1')).expect(200);
+    expect(log.mock.calls.flat().join('\n')).toMatch(/vapi end\s+end-1 → Centre B: customer-ended-call, 95s/);
+
+    const s = registry.get('centre-b')!.db
+      .prepare(`SELECT state, ended_at, json_extract(data, '$.endedReason') r, json_extract(data, '$.durationSeconds') d
+                FROM sessions WHERE json_extract(data, '$.externalId') = 'end-1'`)
+      .get() as { state: string; ended_at: string | null; r: string; d: number };
+    expect(s).toMatchObject({ state: 'ended', r: 'customer-ended-call', d: 95 });
+    expect(s.ended_at).toBeTruthy();
+  });
+
+  it('ignores other server messages, and refuses anyone without the secret', async () => {
+    await request(app).post('/vapi/events').set('x-vapi-secret', SECRET).send({ message: { type: 'status-update' } }).expect(200);
+    await request(app).post('/vapi/events').send(report('end-2')).expect(401);
+    await request(app).post('/vapi/events').set('x-vapi-secret', 'wrong').send(report('end-2')).expect(401);
+  });
+
+  it('is set up by vapi:setup, with more patience before answering', () => {
+    const p = assistantPayload({ publicUrl: 'https://example.sslip.io/', callSecret: 'cs' });
+    expect(p.server).toEqual({ url: 'https://example.sslip.io/vapi/events', secret: 'cs' });
+    expect(p.serverMessages).toEqual(['end-of-call-report']);
+    expect(p.startSpeakingPlan.waitSeconds).toBe(0.8);
+    expect(p.silenceTimeoutSeconds).toBe(30);
+  });
+
+  it('npm run calls prints the call back, with how it ended', async () => {
+    await request(app)
+      .post('/vapi/chat/completions')
+      .set('authorization', `Bearer ${SECRET}`)
+      .send({ stream: false, call: { id: 'end-3' }, messages: [{ role: 'system', content: 'svc-agent org=centre-b caller=9810011001' }] })
+      .expect(200);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    await request(app).post('/vapi/events').set('x-vapi-secret', SECRET).send(report('end-3', { endedReason: 'silence-timed-out' })).expect(200);
+    const lines: string[] = [];
+    expect(printCalls(accounts.orgPath('centre-b'), 1, {}, (l) => lines.push(l))).toBe(1);
+    const text = lines.join('\n');
+    expect(text).toMatch(/stopped at "greeting" · line closed: silence-timed-out · 95s|no booking · line closed: silence-timed-out · 95s/);
+    expect(text).toMatch(/agent  Hi, Centre B/);
   });
 });

@@ -319,7 +319,9 @@ async function main() {
       expect((await sayLine('do you handle insurance claims?')).includes('passed'), 'not passed on');
       await sayLine("No, it's fine.");
       await sayLine('No.');
-      expect((await sayLine('Morning.')).includes('Done.'), 'the booking did not finish');
+      expect((await sayLine('Morning.')).includes('Shall I book it?'), 'no readback before booking');
+      expect(/booked|Done/.test(await sayLine('Yes.')), 'the booking did not finish');
+      expect(/Thanks|see you/.test(await sayLine("No, that's all.")), 'no sign-off');
       const fu = await p.evaluate(async () => (await fetch('/api/followups?status=open&when=today&q=insurance')).json());
       expect(fu.total >= 1, 'no follow-up filed');
     });
@@ -348,7 +350,7 @@ async function main() {
     const pub = await browser.newContext({ viewport: { width: 1280, height: 860 }, permissions: ['microphone'] });
     // Karan, not Rohit: Rohit's Nexon was booked by the agent chat above, and
     // the agent rightly refuses a second open booking for the same car.
-    await pub.addInitScript(fakeSpeech(['Yes, that is me.', 'Book it in for Friday.', 'do you service the curvv?', "No, it's fine.", 'No.', 'Morning.']));
+    await pub.addInitScript(fakeSpeech(['Yes, that is me.', 'Book it in for Friday.', 'do you service the curvv?', "No, it's fine.", 'No.', 'Morning.', 'Yes.', "No, that's all."]));
     const t = await pub.newPage();
     watch(t, errors);
     await check('Vapi mode loads the SDK and starts a call at Vapi (no "not a constructor")', async () => {
@@ -369,7 +371,8 @@ async function main() {
       await t.waitForSelector('text=Call ended', { timeout: 30000 });
       const lines = await t.locator('.captions .msg.agent').allTextContents();
       expect(lines.some((l) => l.includes('Curvv')), `the knowledge answer is missing: ${JSON.stringify(await t.locator('.captions .msg').allTextContents())}`);
-      expect(lines.at(-1)?.includes('Done.'), `last line: ${lines.at(-1)}`);
+      expect(lines.some((l) => /booked|Done/.test(l)), `never booked: ${JSON.stringify(lines)}`);
+      expect(/Thanks|see you/.test(lines.at(-1) ?? ''), `last line: ${lines.at(-1)}`);
       expect((await t.locator('.captions .sms').count()) >= 1, 'no SMS card');
     });
     await check('typed chat works on the same page', async () => {
@@ -395,14 +398,14 @@ async function main() {
       await t.waitForFunction(() => (document.querySelector('#try-who') as HTMLSelectElement).value.startsWith('9799'));
       await t.click('text=Prefer typing? Chat instead');
       await t.waitForSelector('.captions .msg.agent');
-      for (const line of ['Yes.', 'Book it in for Friday.', "No, it's fine.", 'No.', 'Morning.']) {
+      for (const line of ['Yes.', 'Book it in for Friday.', "No, it's fine.", 'No.', 'Morning.', 'Yes.']) {
         const n = await t.locator('.captions .msg.agent').count();
         await t.fill('input[aria-label="Your reply"]', line);
         await t.click('text=Send');
         await t.waitForFunction((k) => document.querySelectorAll('.captions .msg.agent').length > k, n);
       }
       const last = (await t.locator('.captions .msg.agent').last().textContent()) ?? '';
-      expect(last.includes('Done.'), `last line: ${last}`);
+      expect(/booked|Done/.test(last) && last.includes('Anything else'), `last line: ${last}`);
     });
     await check('a browser without its own speech still gets Vapi voice and the chat', async () => {
       const ff = await browser!.newContext();

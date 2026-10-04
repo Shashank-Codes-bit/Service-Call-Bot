@@ -68,7 +68,7 @@ describe('sign-up', () => {
     // The sample calls greet with this centre's name, not the template's.
     const greetings = db.prepare(`SELECT text FROM transcripts WHERE turn_index = 0`).all() as { text: string }[];
     expect(greetings.length).toBeGreaterThan(0);
-    expect(greetings.every((g) => g.text.startsWith('Sharma Motors.'))).toBe(true);
+    expect(greetings.every((g) => g.text.includes('Sharma Motors.') && !g.text.includes('Voltas'))).toBe(true);
     // And the essentials form, so saving it later keeps the name.
     const profile = db.prepare(`SELECT json_extract(data, '$.name') AS name FROM centre_profile`).get() as { name: string };
     expect(profile.name).toBe('Sharma Motors');

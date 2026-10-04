@@ -176,6 +176,13 @@ export function buildApp({
     };
   }
   app.use('/call', rateLimit({ max: 120 }), requireCallSecret, voice((h) => h.call));
+  // Vapi's server messages: only the end-of-call report is for a centre
+  // (vapi.ts `/events`); anything else is acknowledged here, whichever centre.
+  app.post('/vapi/events', rateLimit({ max: 240 }), requireCallSecret, (req, res, next) =>
+    (req.body as { message?: { type?: string } } | undefined)?.message?.type === 'end-of-call-report'
+      ? next()
+      : res.json({ ok: true }),
+  );
   app.use('/vapi', rateLimit({ max: 240 }), requireCallSecret, voice((h) => h.vapi, { capInVoice: true }));
 
   // The public "Talk to the agent" page's data and its typed / browser-voice

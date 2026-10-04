@@ -16,7 +16,9 @@ const CALL_STATES = [
   'special_request', // only asked when there was no complaint (D8)
   'day', // D5, D6
   'drop_slot', // two outcomes with consequences (E8)
-  'confirm', // write, SMS, one-sentence recap (E9)
+  'confirm', // the same-day nudge (D7)
+  'confirm_booking', // the readback: "So that's Friday, drop at 8:30. Shall I book it?"
+  'wrap_up', // "Anything else?" — the caller decides when the call is over
   'ended',
 ] as const;
 export type CallState = (typeof CALL_STATES)[number];
@@ -77,6 +79,13 @@ export type SessionData = {
    * such question in the same call joins it, rather than filing another.
    */
   passedLeadId?: number;
+  /** The cars were read out as a numbered list, so "two" picks the second. */
+  vehicleListed?: boolean;
+  /** Turns spent in the closing "Anything else?", capped so it ends. */
+  wrapTurns?: number;
+  /** Vapi's end-of-call report: why the line closed, and how long it was open. */
+  endedReason?: string;
+  durationSeconds?: number;
   /** Set when the call ended by routing out. */
   leadReason?: LeadReason;
   bookingReference?: string;

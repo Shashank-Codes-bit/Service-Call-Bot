@@ -85,6 +85,12 @@ function schemaFor(state: CallState, models: string[], kbKeys: string[]) {
       .describe("The caller's own vehicle they named, or 'none'."),
     last4: z.string().describe('Last four digits of the registration if spoken, else "".'),
   };
+  // A pick from the numbered list we read out: "two", "the second one".
+  const choice = {
+    choice: z
+      .enum(['none', '1', '2', '3', '4', '5'])
+      .describe('If they picked a car by its number in the list ("two", "the second one"), that number; else "none".'),
+  };
   const day = {
     date: z.string().describe('Resolved calendar date as YYYY-MM-DD, or "" if no day was given.'),
     slot: SLOT,
@@ -99,9 +105,13 @@ function schemaFor(state: CallState, models: string[], kbKeys: string[]) {
   switch (state) {
     case 'greeting':
     case 'confirm':
+    case 'wrap_up':
       return z.object({ ...overlay, answer: YESNO });
+    case 'confirm_booking':
+      // "No, make it Saturday" changes the booking in the same breath.
+      return z.object({ ...overlay, ...day, answer: YESNO });
     case 'vehicle':
-      return z.object({ ...overlay, ...vehicle });
+      return z.object({ ...overlay, ...vehicle, ...choice });
     case 'open_turn':
       return z.object({
         ...overlay,
@@ -161,8 +171,9 @@ export class HaikuClassifier implements Classifier {
     // process. Asserted by test against the outgoing payload, not by trust.
     const safe = redactUtterance(req.utterance, req.redact);
 
+    // Numbered in the order the cars were read out, so "two" can be matched.
     const candidates = (req.vehicles ?? [])
-      .map((v) => `- ${v.model} (registration ends ${v.last4})`)
+      .map((v, i) => `${i + 1}. ${v.model} (registration ends ${v.last4})`)
       .join('\n');
 
     // The shortlist for this utterance, named so the model can recognise a
@@ -207,13 +218,15 @@ export class HaikuClassifier implements Classifier {
 function describeState(state: CallState): string {
   switch (state) {
     case 'greeting': return 'We asked whether the number they are calling from is the one the car is registered under.';
-    case 'vehicle': return 'We asked which of their cars this is about — model and last four of the plate.';
     case 'open_turn': return 'We asked how we can help. They may state intent, car, day and slot all at once.';
     case 'complaint': return 'We asked whether anything is actually wrong with the car.';
     case 'special_request': return 'We asked whether they want anything else done while it is in.';
     case 'day': return 'We asked which day they want to bring it in.';
     case 'drop_slot': return 'We offered a morning or afternoon drop-off.';
     case 'confirm': return 'We asked whether they want the workshop to try for same-day return.';
+    case 'confirm_booking': return 'We read the booking back and asked "Shall I book it?". yes = book it; no = they want to change it (they may name a new day or time).';
+    case 'wrap_up': return 'We asked "Anything else?" after finishing. no = they are done ("no, that\'s all", "thanks", "bye"); yes = they want something more.';
+    case 'vehicle': return 'We read out their cars as a numbered list and asked which one. They may say the number, the model, or the last four digits.';
     default: return 'General turn.';
   }
 }
@@ -249,6 +262,8 @@ export function toClassification(req: ClassifyRequest, p: Parsed): Classificatio
 
   const model = p['model'];
   if (typeof model === 'string' && model !== 'none') out.vehicleModel = model;
+  const choice = p['choice'];
+  if (typeof choice === 'string' && /^[1-5]$/.test(choice)) out.vehicleChoice = Number(choice);
   const last4 = p['last4'];
   if (typeof last4 === 'string' && /^\d{4}$/.test(last4)) out.vehicleLast4 = last4;
 

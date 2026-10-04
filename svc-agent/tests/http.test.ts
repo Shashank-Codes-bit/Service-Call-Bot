@@ -95,7 +95,7 @@ describe('a whole call over HTTP', () => {
       .send({ callerNumber: '9810011001' })
       .expect(200);
 
-    expect(start.body.reply).toContain('automated assistant');
+    expect(start.body.reply).toContain('automated booking assistant');
     const sessionId = start.body.sessionId as string;
 
     const say = (utterance: string) =>
@@ -105,7 +105,13 @@ describe('a whole call over HTTP', () => {
     await say('Book the Nexon in for Friday.');
     await say("No, it's fine.");
     await say('No.');
-    const last = await say('Morning.');
+    const readback = await say('Morning.');
+    expect(readback.body.reply).toMatch(/Shall I book it\?/);
+    expect(readback.body.ended).toBe(false);
+    const booked = await say('Yes.');
+    expect(booked.body.ended).toBe(false);
+    expect(booked.body.reply).toMatch(/Anything else/);
+    const last = await say("No, that's all.");
 
     expect(last.body.ended).toBe(true);
     expect(last.body.bookingReference).toMatch(/^\d{6}-\d{5}$/);
@@ -212,7 +218,7 @@ describe('the Vapi adapter', () => {
 
   it('opens a session on the first turn and reuses it after', async () => {
     const first = await vapiTurn('vapi-call-1', '').expect(200);
-    expect(first.body.choices[0].message.content).toContain('automated assistant');
+    expect(first.body.choices[0].message.content).toContain('automated booking assistant');
 
     const sessionId = sessionIdForExternal(db, 'vapi-call-1');
     expect(sessionId).toBeTruthy();
@@ -263,7 +269,7 @@ describe('the Vapi adapter', () => {
       .map((l) => JSON.parse(l.slice(6)));
     expect(payloads.at(-1)?.choices[0].finish_reason).toBe('stop');
     expect(payloads.map((p) => p.choices[0].delta.content ?? '').join('')).toContain(
-      'automated assistant',
+      'automated booking assistant',
     );
   });
 
@@ -290,6 +296,7 @@ describe('the Vapi adapter', () => {
       "No, it's fine.",
       'No.',
       'Morning.',
+      'Yes.',
     ]) {
       await vapiTurn('vapi-book', line).expect(200);
     }

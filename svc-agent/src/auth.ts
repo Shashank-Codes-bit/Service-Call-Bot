@@ -21,11 +21,14 @@ function matches(supplied: string, expected: string): boolean {
   return timingSafeEqual(a, b);
 }
 
-/** `Authorization: Bearer <secret>`, or the simpler `x-admin-password`. */
+/**
+ * `Authorization: Bearer <secret>`, the simpler `x-admin-password`, or
+ * `x-vapi-secret` — how Vapi sends a server URL's secret.
+ */
 function presented(req: Request): string {
   const header = req.get('authorization') ?? '';
   const bearer = header.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() : '';
-  return bearer || req.get('x-admin-password')?.trim() || '';
+  return bearer || req.get('x-admin-password')?.trim() || req.get('x-vapi-secret')?.trim() || '';
 }
 
 function guard(secret: () => string, name: string) {
