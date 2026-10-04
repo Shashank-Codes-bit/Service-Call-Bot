@@ -566,6 +566,12 @@ moment it had booked. Now:
   - another car ("my wife's car") goes to the team (`otherVehicle`);
   - an unclear answer gets asked once more before goodbye.
 
+**Test cases: `svc-agent/docs/test-cases.md`.** This is the running log of
+every issue found in real calls (with the caller's exact words, cause, fix
+and guarding test), the hard cases still to try, and the invariants any
+test must check. Update it after every test call and every fix. The aim is
+to break the agent, not to prove the happy path.
+
 **Reading calls on the VM** (after deploying this):
 ```bash
 cd ~/Service-Call-Bot/svc-agent/deploy/oracle
