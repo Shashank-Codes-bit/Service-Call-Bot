@@ -27,7 +27,7 @@ import {
   SlotFullError,
 } from '../shared/bookings.ts';
 import { buildLead, insertLead } from '../shared/leads.ts';
-import type { Classifier } from './classifier.ts';
+import type { Classification, Classifier } from './classifier.ts';
 import { TableKnowledgeBank, type KnowledgeBank } from '../kb/index.ts';
 import type { Crm } from './crm.ts';
 import { appendTranscript, createSession, endSession, loadSession, saveSession, type Session } from './session.ts';
@@ -165,23 +165,36 @@ async function turn(
   };
 
   let cls;
+  let quick: Classification | undefined;
   try {
     // "yes", "no", "morning", "4471" — roughly half a real call, and none of
     // it worth a second of network. The fast classifier answers those inline;
     // anything it is not certain about goes to the model (G7).
-    const quick = deps.fast ? await deps.fast.classify(request) : undefined;
+    quick = deps.fast ? await deps.fast.classify(request) : undefined;
     cls = quick?.confident ? quick : await deps.classifier.classify(request);
-  } catch {
-    // The model timed out or errored. The caller must not hear a fault, and
-    // the call must not drop — E0 says never "I didn't understand that", so we
-    // ask the smaller question instead. Bounded by D11 like any other retry,
-    // so a sustained outage routes out to a human rather than looping.
-    const p = registerPushback(d.pushback);
-    d.pushback = p.count;
-    if (p.exhausted) {
-      return routeOut(ctx, 'another_problem', T.pick(T.EXIT.another_problem, seed));
+  } catch (err) {
+    // The model timed out or errored. Said in the log — silent, this cost a
+    // live call (2026-10-04) before anyone could see why. The error only:
+    // never what the caller said.
+    console.error(`  classifier failed at ${session.state}: ${failureLabel(err)}${quick && readsSomething(quick) ? ' · used the quick reading' : ''}`);
+    if (quick && readsSomething(quick)) {
+      // The quick reading is weaker than the model's but it is an answer:
+      // it hears "Yes. The car is registered under the same number." as yes.
+      // Re-asking instead made the caller repeat a right answer, and three
+      // of those handed a booking call to the team.
+      cls = quick;
+    } else {
+      // Nothing to go on. The caller must not hear a fault, and the call must
+      // not drop — E0 says never "I didn't understand that", so we ask the
+      // smaller question instead. Bounded by D11 like any other retry, so a
+      // sustained outage routes out to a human rather than looping.
+      const p = registerPushback(d.pushback);
+      d.pushback = p.count;
+      if (p.exhausted) {
+        return routeOut(ctx, 'another_problem', T.pick(T.EXIT.another_problem, seed));
+      }
+      return answerAndResume(ctx, '');
     }
-    return answerAndResume(ctx, '');
   }
   d.lastCallerWords = cls.callerWords;
 
@@ -411,6 +424,20 @@ function resumeQuestion(ctx: Ctx): { text: string; digits?: boolean } {
 }
 
 /** Answer something out of band, then pick the conversation back up. */
+/** Whether a classification says anything a step can act on. */
+function readsSomething(c: Classification): boolean {
+  return Boolean(
+    c.yesNo || c.day || c.dropSlot || c.noPreference || c.vehicleModel || c.vehicleLast4 ||
+      c.outOfBand || c.intent || c.complaint || c.specialRequest || c.nothing,
+  );
+}
+
+/** "429 rate_limit_error: …" — the kind of failure, for the log. */
+function failureLabel(err: unknown): string {
+  const e = err as { status?: number; name?: string; message?: string; error?: { error?: { type?: string } } };
+  return [e?.status, e?.error?.error?.type ?? e?.name, String(e?.message ?? err).slice(0, 160)].filter(Boolean).join(' ');
+}
+
 function answerAndResume(ctx: Ctx, answer: string): TurnResult {
   const resume = resumeQuestion(ctx);
   // The classifier-failure path passes no answer, which would otherwise leave
