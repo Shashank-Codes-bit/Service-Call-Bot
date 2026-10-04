@@ -107,7 +107,11 @@ function chunk(id: string, delta: Record<string, unknown>, finish: string | null
 export function vapiApi(
   db: Database,
   deps: CallDeps = buildDeps(db),
-  opts: { overCap?: () => boolean } = {},
+  opts: {
+    overCap?: () => boolean;
+    /** Whether a number the public page named may be used (registry: sample callers, or any on a demo centre). */
+    webCaller?: (mobile: string) => boolean;
+  } = {},
 ): Router {
   const r = Router();
 
@@ -115,8 +119,11 @@ export function vapiApi(
     const body = (req.body ?? {}) as VapiBody;
 
     const externalId = body.call?.id ?? String(body.metadata?.['callId'] ?? '');
+    // The page's number is the visitor's say-so: kept only when this centre
+    // allows it, so nobody reaches a real customer's record by naming them.
+    const named = callIdentity(body).callerNumber;
     const callerNumber =
-      callIdentity(body).callerNumber ??
+      (named && (opts.webCaller?.(named) ?? true) ? named : undefined) ??
       (body.call?.customer?.number ?? body.customer?.number ?? '').replace(/\D/g, '').slice(-10);
     const utterance = latestUserUtterance(body.messages);
 

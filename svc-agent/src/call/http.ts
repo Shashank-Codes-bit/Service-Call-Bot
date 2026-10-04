@@ -21,11 +21,11 @@ import { lastSmsId, smsSince } from './sms.ts';
  * complete a booking with no credentials at all: a missing key degrades
  * comprehension, it does not take the service down.
  */
-export function buildDeps(db: Database): CallDeps {
+export function buildDeps(db: Database, { demo = config.demoMode }: { demo?: boolean } = {}): CallDeps {
   const classifier: Classifier = hasApiKey() ? new HaikuClassifier() : new StubClassifier();
   return {
     classifier,
-    crm: config.demoMode ? new DemoCrm(db, new LocalCrm(db)) : new LocalCrm(db),
+    crm: demo ? new DemoCrm(db, new LocalCrm(db)) : new LocalCrm(db),
     kb: new TableKnowledgeBank(db),
     // The same stub, used ahead of the model to answer the unmistakable turns
     // without a round trip. Pointless when the stub *is* the classifier.
@@ -33,7 +33,15 @@ export function buildDeps(db: Database): CallDeps {
   };
 }
 
-export function callApi(db: Database, deps: CallDeps = buildDeps(db)): Router {
+/**
+ * `demo` is per centre now (orgs.demo, and DEMO_MODE as the server-wide
+ * master switch): a demo centre shows the SMS in the chat; a real one never does.
+ */
+export function callApi(
+  db: Database,
+  deps: CallDeps = buildDeps(db),
+  { demo = config.demoMode }: { demo?: boolean } = {},
+): Router {
   const r = Router();
 
   /** Begin a call. The caller's number is all we know at this point. */
@@ -56,7 +64,7 @@ export function callApi(db: Database, deps: CallDeps = buildDeps(db)): Router {
 
     const smsFrom = lastSmsId(db);
     const result = await handleTurn(db, deps, sessionId, utterance);
-    if (!config.demoMode) return res.json(result);
+    if (!demo) return res.json(result);
 
     // DEMO_MODE: a chat has no phone, so the reply carries what the phone
     // would have received — the OTP, the booking confirmation. Never outside

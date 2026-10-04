@@ -17,6 +17,7 @@ import { today } from '../shared/dates.ts';
 import { AccountError, initials, type Accounts, type Org } from '../orgs/accounts.ts';
 import { dailyTurnCap, turnsToday, type OrgHandle, type Registry } from '../orgs/registry.ts';
 import { callIdentity } from '../call/vapi.ts';
+import { resetDemoActivity, resetKey } from '../orgs/demo.ts';
 import { publicApi } from './public.ts';
 
 /**
@@ -62,7 +63,16 @@ export function buildApp({
 
   const me = (org: Org) => {
     const name = nameOf(org);
-    return { slug: org.slug, name, userId: org.user_id, initials: initials(name), today: today() };
+    return {
+      slug: org.slug,
+      name,
+      userId: org.user_id,
+      initials: initials(name),
+      today: today(),
+      // The centre's switch, and whether the server allows demo at all (DEMO_MODE).
+      demo: org.demo !== 0,
+      demoAvailable: config.demoMode,
+    };
   };
 
   auth.post('/login', rateLimit({ max: 10 }), (req, res) => {
@@ -94,6 +104,27 @@ export function buildApp({
     res.json({ ok: true });
   });
 
+  const signedIn = requireOrg(accounts, secret);
+
+  /** The demo switch: a demo centre's day resets every night (orgs/demo.ts). */
+  auth.put('/demo', signedIn, (req, res) => {
+    const org = res.locals['org'] as Org;
+    if (typeof req.body?.demo !== 'boolean') return res.status(400).json({ error: 'demo must be true or false' });
+    accounts.setDemo(org.slug, req.body.demo);
+    registry.refresh(org.slug);
+    res.json(me(accounts.get(org.slug)!));
+  });
+
+  /** Put a demo centre's day back to the sample now, rather than waiting for the night. */
+  auth.post('/demo/reset', signedIn, (_req, res) => {
+    const org = res.locals['org'] as Org;
+    const h = registry.get(org.slug);
+    if (!h?.demo) return res.status(409).json({ error: 'Only a demo centre can be reset.', kind: 'not_demo' });
+    const r = resetDemoActivity(h.db);
+    accounts.setMeta(resetKey(org.slug), today());
+    res.json({ ok: true, ...r });
+  });
+
   auth.get('/me', (req, res) => {
     const org = readSession(cookie(req, SESSION_COOKIE), accounts, secret());
     if (!org) return res.status(401).json({ error: 'Please sign in', kind: 'unauthorised' });
@@ -108,7 +139,6 @@ export function buildApp({
   // centre's own file.
   // -------------------------------------------------------------------------
 
-  const signedIn = requireOrg(accounts, secret);
   const handleOf = (res: express.Response): OrgHandle | undefined =>
     registry.get((res.locals['org'] as Org).slug);
 

@@ -8,12 +8,15 @@ import { vapiApi } from '../call/vapi.ts';
 import type { CallDeps } from '../call/machine.ts';
 import { today } from '../shared/dates.ts';
 import { config } from '../config.ts';
+import { allowedCaller } from '../db/sample.ts';
 import type { Accounts } from './accounts.ts';
 
 /** One centre, open: its database and the routers that serve it. */
 export type OrgHandle = {
   slug: string;
   db: Database;
+  /** Demo behaviour for this centre: its own switch, under the server's DEMO_MODE. */
+  demo: boolean;
   deps: CallDeps;
   api: Router;
   call: Router;
@@ -30,26 +33,41 @@ export class Registry {
 
   constructor(
     readonly accounts: Accounts,
-    private readonly makeDeps: (db: Database) => CallDeps = buildDeps,
+    private readonly makeDeps: (db: Database, opts: { demo: boolean }) => CallDeps = buildDeps,
   ) {}
 
   get(slug: string): OrgHandle | undefined {
     const cached = this.open.get(slug);
     if (cached) return cached;
     if (!this.accounts.get(slug)) return undefined;
-
     const db = open(this.accounts.orgPath(slug));
     migrate(db);
-    const deps = this.makeDeps(db);
+    return this.build(slug, db);
+  }
+
+  /**
+   * Rebuild a centre's routers over its open database — after its demo
+   * switch changes, so the very next request behaves the new way.
+   */
+  refresh(slug: string): OrgHandle | undefined {
+    const cached = this.open.get(slug);
+    return cached ? this.build(slug, cached.db) : this.get(slug);
+  }
+
+  private build(slug: string, db: Database): OrgHandle {
+    const demo = config.demoMode && this.accounts.get(slug)?.demo !== 0;
+    const deps = this.makeDeps(db, { demo });
     const handle: OrgHandle = {
       slug,
       db,
+      demo,
       deps,
       api: api(db, { deps }),
-      call: callApi(db, deps),
+      call: callApi(db, deps, { demo }),
       // Voice can't take a 429 — over the day's cap, the caller hears a sentence.
       vapi: vapiApi(db, deps, {
         overCap: () => turnsToday(db) >= (this.accounts.get(slug)?.daily_turn_cap ?? config.orgDailyTurns),
+        webCaller: (mobile) => allowedCaller({ demo }, mobile),
       }),
     };
     this.open.set(slug, handle);

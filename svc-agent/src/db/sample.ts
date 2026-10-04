@@ -1,5 +1,5 @@
 import type { Database } from 'better-sqlite3';
-import { addDays, parseIsoDate, timestamp, type IsoDate } from '../shared/dates.ts';
+import { addDays, parseIsoDate, timestamp, today as toIsoDateLocal, type IsoDate } from '../shared/dates.ts';
 import { expectedPickup, nextBookingReference } from '../shared/bookings.ts';
 import type { DropSlot, Pool } from '../shared/types.ts';
 
@@ -202,3 +202,60 @@ export const SAMPLE_CALLERS: Array<{ mobile: string; shows: string }> = [
   { mobile: '9810088008', shows: 'free service lapsed' },
   { mobile: '9810100010', shows: 'wants the car back the same day' },
 ];
+
+/**
+ * Who a visitor may call as. A sample caller always; on a demo centre also a
+ * made-up demo caller, or any number (the agent gives it a demo car). Never a
+ * real customer of a centre that isn't a demo, by guessing their number.
+ */
+export function allowedCaller(h: { demo: boolean }, mobile: string): boolean {
+  return h.demo || SAMPLE_CALLERS.some((s) => s.mobile === mobile);
+}
+
+/**
+ * Callers a visitor adds on the public page ("+ New demo caller"): a made-up
+ * name, number, car and plate, with a paid service due, so the call books.
+ * Their numbers share a prefix no sample uses, which is how a day's count is
+ * kept; the nightly demo reset clears them with the rest of the activity.
+ */
+export const DEMO_CALLER_PREFIX = '9799';
+
+export type DemoCaller = { name: string; model: string; mobile: string; registration: string };
+
+export function addDemoCaller(db: Database, now = new Date(), rand: () => number = Math.random): DemoCaller {
+  const pick = <T>(xs: readonly T[]) => xs[Math.floor(rand() * xs.length)]!;
+  const digits = (n: number) => Array.from({ length: n }, () => Math.floor(rand() * 10)).join('');
+  const taken = (sql: string, v: string) => Boolean(db.prepare(sql).get(v));
+
+  const name = `${pick(FIRST)} ${pick(LAST)}`;
+  const model = pick(MODELS);
+  let mobile: string;
+  do mobile = `${DEMO_CALLER_PREFIX}${digits(6)}`;
+  while (taken(`SELECT 1 FROM customers WHERE mobile_number = ?`, mobile));
+  let registration: string;
+  do registration = `${pick(STATES)}${String(10 + Math.floor(rand() * 80))}${pick([...LETTERS])}${pick([...LETTERS])}${1000 + Math.floor(rand() * 9000)}`;
+  while (taken(`SELECT 1 FROM vehicles WHERE registration_number = ?`, registration));
+
+  const serviceNumber = 4 + Math.floor(rand() * 3);
+  const day = toIsoDateLocal(now);
+  db.transaction(() => {
+    const customerId = Number(
+      db.prepare(`INSERT INTO customers (mobile_number, name, created_at) VALUES (?, ?, ?)`).run(mobile, name, timestamp(now))
+        .lastInsertRowid,
+    );
+    const vehicleId = Number(
+      db
+        .prepare(`INSERT INTO vehicles (customer_id, registration_number, model, purchase_date) VALUES (?, ?, ?, ?)`)
+        .run(customerId, registration, model, addDays(day, -(400 + Math.floor(rand() * 900)))).lastInsertRowid,
+    );
+    // Paid (beyond the free three), due now: bookable on the first ask.
+    db.prepare(
+      `INSERT INTO service_due (vehicle_id, service_number, service_type, is_free, due_date) VALUES (?, ?, ?, 0, ?)`,
+    ).run(vehicleId, serviceNumber, serviceNumber === 5 ? 'major' : 'minor', addDays(day, -Math.floor(rand() * 10)));
+  })();
+  return { name, model, mobile, registration };
+}
+
+/** How many demo callers this centre has now (the reset clears them nightly). */
+export const demoCallerCount = (db: Database) =>
+  (db.prepare(`SELECT COUNT(*) n FROM customers WHERE mobile_number LIKE '${DEMO_CALLER_PREFIX}%'`).get() as { n: number }).n;
