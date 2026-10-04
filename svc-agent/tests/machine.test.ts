@@ -11,6 +11,7 @@ import { DEMO_PLATE_PREFIX, DemoCrm, LocalCrm } from '../src/call/crm.ts';
 import { handleTurn, startCall, type CallDeps } from '../src/call/machine.ts';
 import { readTranscript } from '../src/call/session.ts';
 import type { TurnResult } from '../src/call/types.ts';
+import * as T from '../src/call/templates.ts';
 
 /** Monday. Bends land on Wed +2 (minor), Thu +3 (everything), Fri +4 (minor am). */
 const MONDAY = new Date(2026, 8, 14, 10, 0, 0);
@@ -55,6 +56,8 @@ describe('the E10 reference call, end to end', () => {
       "No, it's fine.",
       'No.',
       "Morning's better.",
+      'Yes, book it.',
+      "No, that's all, thanks.",
     ]);
     const last = turns.at(-1)!;
 
@@ -63,11 +66,15 @@ describe('the E10 reference call, end to end', () => {
 
     const script = said(turns);
     // Discloses the bot once, in one clause, and never again (G3.1).
-    expect(script.match(/automated assistant|automated line/g)).toHaveLength(1);
+    expect(script.match(/automated/g)).toHaveLength(1);
     // States what is due rather than asking the caller to confirm it (D1).
     expect(script).toContain('fourth service');
     // Asks about a fault like a person, not like a survey (E6).
-    expect(script).toContain('anything actually wrong');
+    expect(script).toMatch(/Anything wrong with it|playing up/);
+    // Reads the booking back and waits for a yes before writing it.
+    expect(script).toMatch(/Shall I book it\?/);
+    // Asks before ending, and only then says goodbye.
+    expect(script).toMatch(/Anything else/);
     // Names the caller exactly once, at the end (G3.8).
     expect(script.match(/Rohit/g)).toHaveLength(1);
 
@@ -89,6 +96,7 @@ describe('the E10 reference call, end to end', () => {
       'Nothing wrong with it.',
       'No thanks.',
       'Morning.',
+      'Yes.',
     ]);
     const sms = db.prepare(`SELECT body FROM sms_log ORDER BY id DESC LIMIT 1`).get() as {
       body: string;
@@ -99,7 +107,7 @@ describe('the E10 reference call, end to end', () => {
   });
 
   it('keeps a full transcript of both sides', async () => {
-    const turns = await call('9810011001', ['Yes.', 'Service the Nexon on Friday.', 'No.', 'No.', 'Morning.']);
+    const turns = await call('9810011001', ['Yes.', 'Service the Nexon on Friday.', 'No.', 'No.', 'Morning.', 'Yes.']);
     const t = readTranscript(db, turns[0]!.sessionId);
     expect(t.filter((x) => x.speaker === 'caller').length).toBeGreaterThan(3);
     expect(t.filter((x) => x.speaker === 'agent').length).toBeGreaterThan(3);
@@ -111,7 +119,9 @@ describe('identification', () => {
   it('routes out a number that is not on the system', async () => {
     const turns = await call('9899999999', ['Yes, that is my number.']);
     expect(turns.at(-1)!.leadReason).toBe('number_not_found');
-    expect(turns.at(-1)!.ended).toBe(true);
+    // Not hung up on: asked whether there's anything else first.
+    expect(turns.at(-1)!.state).toBe('wrap_up');
+    expect(turns.at(-1)!.reply).toMatch(/anything else/i);
   });
 
   it('asks for the registered number on the different-phone branch', async () => {
@@ -145,10 +155,34 @@ describe('vehicle disambiguation (E2)', () => {
     expect(turns.at(-1)!.state).toBe('open_turn');
   });
 
-  it('asks for model and last four when there are several', async () => {
+  it('reads two to five cars out, numbered, with the last four of each plate', async () => {
+    const turns = await call('9810022002', ['Yes.']);
+    const reply = turns.at(-1)!.reply;
+    expect(turns.at(-1)!.state).toBe('vehicle');
+    expect(reply).toMatch(/2 cars/);
+    expect(reply).toMatch(/One, the \w+ ending \d \d \d \d\. Two, the \w+ ending \d \d \d \d\./);
+    expect(reply).toMatch(/one or two\?$/);
+  });
+
+  for (const answer of ['Two.', 'The second one.', '2', 'number two']) {
+    it(`takes "${answer}" as the second car on the list`, async () => {
+      const turns = await call('9810022002', ['Yes.', answer]);
+      const second = (db.prepare(`SELECT v.model FROM vehicles v JOIN customers c ON c.id = v.customer_id
+        WHERE c.mobile_number = '9810022002' ORDER BY v.id`).all() as { model: string }[])[1]!.model;
+      expect(turns.at(-1)!.state).toBe('open_turn');
+      expect(turns.at(-1)!.reply).toContain(second);
+    });
+  }
+
+  it('asks for model and last four when there are more than five', async () => {
+    const cust = db.prepare(`SELECT id FROM customers WHERE mobile_number = '9810022002'`).get() as { id: number };
+    for (let i = 0; i < 4; i++) {
+      db.prepare(`INSERT INTO vehicles (customer_id, registration_number, model) VALUES (?, ?, 'Brezza')`).run(cust.id, `HR26ZZ900${i}`);
+    }
     const turns = await call('9810022002', ['Yes.']);
     expect(turns.at(-1)!.state).toBe('vehicle');
     expect(turns.at(-1)!.reply).toMatch(/last four/i);
+    expect(turns.at(-1)!.reply).not.toMatch(/One, the/);
   });
 
   it('resolves on the model alone when models differ', async () => {
@@ -161,11 +195,13 @@ describe('vehicle disambiguation (E2)', () => {
     expect(turns.at(-1)!.state).toBe('open_turn');
   });
 
-  it('ends the call when two cars share a model and only the model is given', async () => {
-    // Arjun has two Swifts, so the third pass cannot discriminate.
-    const turns = await call('9810111011', ['Yes.', "It's the Swift."]);
-    expect(turns.at(-1)!.leadReason).toBe('model_not_recognised');
-    expect(turns.at(-1)!.ended).toBe(true);
+  it('asks for the number when two listed cars share a model and only the model is given', async () => {
+    // Arjun has two Swifts, so the model alone cannot discriminate — but the
+    // list was just read out, so the number can.
+    const turns = await call('9810111011', ['Yes.', "It's the Swift.", 'The second one.']);
+    expect(turns.at(-2)!.state).toBe('vehicle');
+    expect(turns.at(-2)!.reply).toMatch(/number/i);
+    expect(turns.at(-1)!.state).toBe('open_turn');
   });
 
   it('still resolves two same-model cars when the digits are given', async () => {
@@ -229,7 +265,7 @@ describe('day and slot (D5, D6)', () => {
     const turns = await call('9810011001', ['Yes.', 'Nexon service Friday.', 'No.', 'No.']);
     const reply = turns.at(-1)!.reply;
     expect(reply).toMatch(/8:30/);
-    expect(reply).toMatch(/same evening/);
+    expect(reply).toMatch(/evening/);
   });
 
   it('routes out after three pushes on a full day (D11)', async () => {
@@ -272,6 +308,7 @@ describe('the same-day nudge (D7)', () => {
       'No.',
       'Afternoon.',
       'No, next day is fine.',
+      'Yes.',
     ]);
     expect(turns.at(-1)!.bookingReference).toBeDefined();
   });
@@ -285,6 +322,7 @@ describe('complaints (D8)', () => {
       "There's a rattling from the front when I brake.",
       'Morning.',
       'No, next day is fine.',
+      'Yes.',
     ]);
     const last = turns.at(-1)!;
     expect(said(turns)).not.toMatch(/wash, interior clean/);
@@ -309,14 +347,14 @@ describe('the spoken offer never promises delivery it cannot make (D7)', () => {
     ]).then((turns) => {
       const offer = turns.at(-1)!.reply;
       expect(offer).toMatch(/8:30/);
-      expect(offer).not.toMatch(/same evening/i);
+      expect(offer).not.toMatch(/evening/i);
       expect(offer).toMatch(/next day/i);
     });
   });
 
   it('does offer same-evening for a minor job, where it is true', async () => {
     const turns = await call('9810044004', ['Yes.', 'i20 service.', 'No.', 'No.', 'Tuesday.']);
-    expect(said(turns)).toMatch(/same evening/i);
+    expect(said(turns)).toMatch(/evening/i);
   });
 
   it('acknowledges a reported fault before moving on (G3.3)', async () => {
@@ -367,7 +405,7 @@ describe('out-of-band questions (D9, D10)', () => {
   it('escalates a breakdown without triage (E3)', async () => {
     const turns = await call('9810011001', ['Yes.', "The car won't start, it's in my basement."]);
     expect(turns.at(-1)!.leadReason).toBe('another_problem');
-    expect(turns.at(-1)!.ended).toBe(true);
+    expect(turns.at(-1)!.state).toBe('wrap_up');
   });
 });
 
@@ -472,6 +510,7 @@ describe('D12 — the second vehicle is mentioned, never booked', () => {
       'No.',
       'No.',
       'Afternoon.', // Friday minor morning is full — the agent already said so
+      'Yes.',
     ]);
     const last = turns.at(-1)!;
     expect(last.bookingReference).toBeDefined();
@@ -519,7 +558,7 @@ describe('resuming after an out-of-band question (D9, D10)', () => {
     const last = turns.at(-1)!;
     expect(last.state).toBe('greeting');
     expect(last.reply).toMatch(/parking/i);
-    expect(last.reply).toMatch(/registered under/i);
+    expect(last.reply).toMatch(/registered to the number ending 1 0 0 1/i);
   });
 });
 
@@ -533,7 +572,7 @@ describe('an account with no vehicles on it', () => {
 
     const turns = await call('9810120012', ['Yes.']);
     const last = turns.at(-1)!;
-    expect(last.ended).toBe(true);
+    expect(last.state).toBe('wrap_up');
     // Not model_not_recognised — they were never asked to name a car, and
     // telling the CRM team the model was wrong sends them looking for nothing.
     expect(last.leadReason).toBe('missing_required_field');
@@ -555,9 +594,10 @@ describe('D6 — a single free slot is a statement, so "yes" accepts it', () => 
       'no',
       FRIDAY,
       "yes that's fine",
+      'yes',
     ]);
     const last = turns.at(-1)!;
-    expect(said(turns)).toMatch(/only got the afternoon|afternoon is all/i);
+    expect(said(turns)).toMatch(/only got the afternoon|just the afternoon/i);
     expect(last.bookingReference).toMatch(/^\d{6}-\d{5}$/);
 
     const booked = db
@@ -696,7 +736,7 @@ describe('DEMO_MODE — a stranger can book', () => {
   // Without this a public demo is useless: every unknown number ends in
   // number_not_found. 9899999999 is deliberately absent from the seed.
   const STRANGER = '9899999999';
-  const bookIt = ['yes', 'I want to book a service', 'no', 'no', addDays(TODAY, 8), 'morning'];
+  const bookIt = ['yes', 'I want to book a service', 'no', 'no', addDays(TODAY, 8), 'morning', 'yes'];
 
   beforeEach(() => {
     deps = { ...deps, crm: new DemoCrm(db, new LocalCrm(db)) };
@@ -760,7 +800,7 @@ describe('a voice line\'s "yes" with stray words (live call, 2026-10-04)', () =>
     const first = await startCall(db, '9810011001', MONDAY);
     await handleTurn(db, deps, first.sessionId, 'Yes.', MONDAY);
     const t = await handleTurn(db, deps, first.sessionId, "The car won't start, it's in my basement.", MONDAY);
-    expect(t.ended).toBe(true);
+    expect(t.state).toBe('wrap_up');
     expect(t.leadReason).toBe('another_problem');
   });
 
@@ -768,7 +808,134 @@ describe('a voice line\'s "yes" with stray words (live call, 2026-10-04)', () =>
     const escalates = { classify: async (req: { utterance: string }) => ({ callerWords: req.utterance, intent: 'another_problem' as const }) };
     const first = await startCall(db, '9810011001', MONDAY);
     const t = await handleTurn(db, { ...deps, classifier: escalates }, first.sessionId, 'My car has broken down on the highway.', MONDAY);
-    expect(t.ended).toBe(true);
+    expect(t.state).toBe('wrap_up');
     expect(t.leadReason).toBe('another_problem');
+  });
+});
+
+describe('reading the booking back, and waiting for a yes', () => {
+  const upToSlot = ['Yes.', 'Nexon service Friday.', 'No.', 'No.', 'Morning.'];
+  const bookings = () =>
+    (db.prepare(`SELECT COUNT(*) n FROM bookings b JOIN vehicles v ON v.id = b.vehicle_id WHERE v.registration_number = 'HR26AB4471'`).get() as { n: number }).n;
+
+  it('reads it back and books nothing until the caller says yes', async () => {
+    const turns = await call('9810011001', upToSlot);
+    const last = turns.at(-1)!;
+    expect(last.state).toBe('confirm_booking');
+    expect(last.reply).toMatch(/Friday the 18th/);
+    expect(last.reply).toMatch(/8:30/);
+    expect(last.reply).toMatch(/Shall I book it\?$/);
+    expect(bookings()).toBe(0);
+  });
+
+  it('on "no", asks what to change, and books the new day', async () => {
+    const later = addDays(TODAY, 8);
+    const turns = await call('9810011001', [...upToSlot, 'No.', later, 'Morning.', 'Yes.']);
+    expect(turns[6]!.state).toBe('day');
+    expect(turns[6]!.reply).toMatch(/another day or another time|different day/i);
+    expect(bookings()).toBe(1);
+    const b = db.prepare(`SELECT booking_date FROM bookings WHERE booking_reference = ?`).get(turns.at(-1)!.bookingReference!) as { booking_date: string };
+    expect(b.booking_date).toBe(later);
+  });
+
+  it('takes a new day said in the same breath as the no', async () => {
+    const later = addDays(TODAY, 8);
+    const turns = await call('9810011001', [...upToSlot, `No, make it ${later}.`]);
+    expect(turns.at(-1)!.state).toBe('drop_slot');
+    const d = db.prepare(`SELECT json_extract(data, '$.bookingDate') d FROM sessions WHERE id = ?`).get(turns[0]!.sessionId) as { d: string };
+    expect(d.d).toBe(later);
+    expect(bookings()).toBe(0);
+  });
+
+  it('takes a change of time on the same day', async () => {
+    const turns = await call('9810011001', [...upToSlot, 'Can it be the afternoon instead?']);
+    const d = db.prepare(`SELECT json_extract(data, '$.dropSlot') s FROM sessions WHERE id = ?`).get(turns[0]!.sessionId) as { s: string };
+    expect(d.s).toBe('afternoon');
+    expect(bookings()).toBe(0);
+  });
+});
+
+describe('the caller decides when the call is over', () => {
+  const booked = ['Yes.', 'Nexon service Friday.', 'No.', 'No.', 'Morning.', 'Yes.'];
+
+  it('asks "Anything else?" after booking, and only then says goodbye', async () => {
+    const turns = await call('9810011001', [...booked, "No, that's all, thanks."]);
+    expect(turns.at(-2)!.reply).toMatch(/booked|Booking that in/i);
+    expect(turns.at(-2)!.reply).toMatch(/Anything else/);
+    expect(turns.at(-2)!.ended).toBe(false);
+    expect(turns.at(-1)!.ended).toBe(true);
+    expect(turns.at(-1)!.reply).toMatch(/Rohit/);
+    expect(turns.at(-1)!.reply).toMatch(/Friday/);
+  });
+
+  it('answers a question in the closing, then asks again', async () => {
+    const turns = await call('9810011001', [...booked, 'What time do you open?']);
+    expect(turns.at(-1)!.state).toBe('wrap_up');
+    expect(turns.at(-1)!.reply).toMatch(/9 in the morning/);
+    expect(turns.at(-1)!.reply).toMatch(/Anything/);
+  });
+
+  it('hands anything bigger to the team rather than starting over', async () => {
+    const turns = await call('9810011001', [...booked, 'Yes, can I also book my wife’s car in?']);
+    expect(turns.at(-1)!.state).toBe('wrap_up');
+    expect(turns.at(-1)!.reply).toMatch(/team|workshop/i);
+  });
+
+  it('closes after three turns, whatever is said', async () => {
+    const turns = await call('9810011001', [...booked, 'Yes.', 'What time do you open?', 'Is there parking?']);
+    expect(turns.at(-1)!.ended).toBe(true);
+    expect(turns.at(-1)!.reply).toMatch(/Thanks/);
+  });
+
+  it('asks after a hand-off too, then thanks the caller without a day', async () => {
+    const turns = await call('9810066006', ['Yes.', 'Book the Tiago in.', 'No thanks.']);
+    expect(turns.at(-2)!.leadReason).toBe('existing_open_booking');
+    expect(turns.at(-2)!.reply).toMatch(/Anything else/);
+    expect(turns.at(-1)!.ended).toBe(true);
+    expect(turns.at(-1)!.reply).not.toMatch(/see you/i);
+  });
+});
+
+describe('sounding like a person at a desk', () => {
+  const words = (s: string) => s.replace(/\b(\d)(?: \d)+\b/g, '$1').split(/\s+/).filter((w) => /[a-z0-9]/i.test(w)).length;
+  const sentencesOf = (text: string) => text.split(/(?<=[.?!])\s+/).filter(Boolean);
+  /** A spoken list item — "Two, the i20 ending 4 0 0 4." — counts with its list, not alone. */
+  const listItem = (s: string) => /^(One|Two|Three|Four|Five), the /.test(s);
+  const LEAD_INS = [...T.LOOKUP_ACCOUNT, ...T.LOOKUP_DAY];
+
+  const calls: Array<[string, string, string[]]> = [
+    ['a booking', '9810011001', ['Yes.', 'Nexon service Friday.', 'No.', 'No.', 'Morning.', 'Yes.', 'No thanks.']],
+    ['a fault and a change of day', '9810055005', ['Yes.', 'Fortuner service.', 'The brakes squeal.', 'Friday.', 'Morning.', 'No, next day is fine.', 'No.', addDays(TODAY, 8), 'Morning.', 'Yes.', 'No.']],
+    ['two cars', '9810022002', ['Yes.', 'Two.', 'Service please.', 'No.', 'No.', 'Friday.', 'Afternoon.', 'Yes.', "That's all."]],
+    ['a hand-off', '9810066006', ['Yes.', 'Book the Tiago in.', 'No.']],
+  ];
+
+  for (const [name, number, lines] of calls) {
+    it(`keeps every sentence short: ${name}`, async () => {
+      const turns = await call(number, lines);
+      for (const t of turns) {
+        const parts = sentencesOf(t.reply);
+        for (const s of parts) expect(words(s), s).toBeLessThanOrEqual(T.SENTENCE_WORDS);
+        // A three-sentence line, plus at most one lead-in or acknowledgement.
+        expect(parts.filter((s) => !listItem(s)).length, t.reply).toBeLessThanOrEqual(T.TURN_SENTENCES + 1);
+        // Never two lead-ins in one reply.
+        expect(LEAD_INS.filter((l) => t.reply.includes(l)).length, t.reply).toBeLessThanOrEqual(1);
+      }
+      // No two replies in a row open the same way.
+      const firsts = turns.map((t) => sentencesOf(t.reply)[0]);
+      for (let i = 1; i < firsts.length; i++) expect(firsts[i], `turn ${i}`).not.toBe(firsts[i - 1]);
+    });
+  }
+
+  it('checks the number by its last four digits, said one by one', async () => {
+    const first = await startCall(db, '9810011001', MONDAY);
+    expect(first.reply).toMatch(/ending 1 0 0 1\?$/);
+    expect(first.reply).not.toMatch(/98100/);
+  });
+
+  it('says it is looking things up while it does', async () => {
+    const turns = await call('9810011001', ['Yes.', 'Nexon service.', 'No.', 'No.', 'Friday.']);
+    expect(T.LOOKUP_ACCOUNT.some((l) => turns[1]!.reply.startsWith(l))).toBe(true);
+    expect(T.LOOKUP_DAY.some((l) => turns.at(-1)!.reply.startsWith(l))).toBe(true);
   });
 });

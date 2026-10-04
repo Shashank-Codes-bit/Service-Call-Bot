@@ -47,6 +47,8 @@ export type Classification = {
   /** E2, G6 — matched against this caller's own vehicles, never invented. */
   vehicleModel?: string;
   vehicleLast4?: string;
+  /** "Two", "the second one" — a car picked from the numbered list we read out (1-based). */
+  vehicleChoice?: number;
 
   /** Resolved to a date by the LLM; **bookability is decided by our code**. */
   day?: IsoDate;
@@ -174,6 +176,23 @@ export function matchKbKey(utterance: string, topics: Array<string | KbTopic> = 
   return best?.key;
 }
 
+const ORDINALS = ['first', 'second', 'third', 'fourth', 'fifth'];
+const NUMBERS = ['one', 'two', 'three', 'four', 'five'];
+
+/**
+ * The car picked from a numbered list: "the second one", "number two", or
+ * just "two" / "2". A four-digit run is a plate, not a choice.
+ */
+export function listChoice(t: string, count: number): number | undefined {
+  const inRange = (n: number) => (n >= 1 && n <= count ? n : undefined);
+  const ord = ORDINALS.findIndex((w) => new RegExp(`\\b${w}\\b`).test(t));
+  if (ord >= 0) return inRange(ord + 1);
+  const named = /\b(?:number|option|no\.?)\s*(one|two|three|four|five|[1-5])\b/.exec(t);
+  const word = named?.[1] ?? /^(?:it'?s |the |um,? |uh,? )*(one|two|three|four|five|[1-5])(?: please| one)?[.!]?$/.exec(t.trim())?.[1];
+  if (!word) return undefined;
+  return inRange(/\d/.test(word) ? Number(word) : NUMBERS.indexOf(word) + 1);
+}
+
 export class StubClassifier implements Classifier {
   async classify(req: ClassifyRequest): Promise<Classification> {
     const t = req.utterance.toLowerCase().trim();
@@ -193,7 +212,10 @@ export class StubClassifier implements Classifier {
       !/\bwrong\b|\bnoise\b|\bnot working\b|\bbroken\b|\bcheck the\b|\bfix\b/.test(t) &&
       // Nor a request to book, which is what the call is for: "Can you help
       // me with booking a service?" read as a question about the centre.
-      !/\bbook(ing|ed)?\b|\bappointment\b|\bschedule\b|\bnew service\b|\bget (it|my car|the car) serviced\b/.test(t);
+      !/\bbook(ing|ed)?\b|\bappointment\b|\bschedule\b|\bnew service\b|\bget (it|my car|the car) serviced\b/.test(t) &&
+      // Nor, while a day and time are being settled, "can it be the afternoon instead?".
+      !(['day', 'drop_slot', 'confirm_booking'].includes(req.state) &&
+        /\b(morning|afternoon|instead|change|move|another day|different)\b/.test(t));
 
     if (asksAboutTheCentre) {
       out.outOfBand = 'general';
@@ -209,10 +231,24 @@ export class StubClassifier implements Classifier {
       return out;
     }
 
-    if (/^(yes|yeah|yep|yup|correct|that'?s right|right|ok|okay|sure|please do)\b/.test(t)) {
+    if (/^(yes|yeah|yep|yup|correct|that'?s right|right|ok|okay|sure|please do|go ahead|book it|sounds good|perfect|that works)\b/.test(t)) {
       out.yesNo = 'yes';
     } else if (/^(no|nope|nah|not really|that'?s not|wrong)\b/.test(t)) {
       out.yesNo = 'no';
+    }
+    // The closing "Anything else?": these all mean "no, I'm done".
+    if (
+      req.state === 'wrap_up' &&
+      out.yesNo !== 'yes' &&
+      /\bthat'?s (all|it|everything)\b|\bnothing (else|more)\b|\bno,? thanks?\b|\bthank(s| you)\b|\bbye\b|\ball good\b|\bi'?m (good|fine|done)\b/.test(t)
+    ) {
+      out.yesNo = 'no';
+    }
+
+    // "Two", "the second one", "number three" — a pick from the cars we read out.
+    if (req.state === 'vehicle') {
+      const choice = listChoice(t, (req.vehicles ?? []).length);
+      if (choice) out.vehicleChoice = choice;
     }
 
     if (/\bservice\b|\bbook\b|\bappointment\b|\bslot\b/.test(t)) out.intent = 'book';
@@ -266,8 +302,10 @@ export class StubClassifier implements Classifier {
       // These two states carry meaning the stub cannot read.
       req.state !== 'open_turn' &&
       req.state !== 'complaint' &&
-      (out.yesNo !== undefined || out.dropSlot !== undefined || /^\d{4,10}$/.test(t));
-    if (unambiguous) out.confident = true;
+      (out.yesNo !== undefined || out.dropSlot !== undefined || out.vehicleChoice !== undefined || /^\d{4,10}$/.test(t));
+    // "No, that's all, thanks." is longer than three words and as clear as "no".
+    const closing = req.state === 'wrap_up' && out.yesNo === 'no' && words <= 6 && !out.outOfBand;
+    if (unambiguous || closing) out.confident = true;
 
     return out;
   }

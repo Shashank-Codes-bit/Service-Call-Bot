@@ -2,7 +2,7 @@ import { Router } from 'express';
 import type { Database } from 'better-sqlite3';
 import { handleTurn, startCall, type CallDeps } from './machine.ts';
 import { buildDeps, sessionIdForExternal } from './http.ts';
-import { loadSession } from './session.ts';
+import { endSession, loadSession, saveSession } from './session.ts';
 
 /**
  * The Vapi adapter. Its custom-LLM mode expects an OpenAI-compatible
@@ -33,6 +33,8 @@ type VapiBody = {
   customer?: { number?: string };
   assistantOverrides?: { variableValues?: Vars };
   metadata?: Vars;
+  /** A server message (`/vapi/events`) wraps the call one level down. */
+  message?: VapiBody;
 };
 
 /**
@@ -45,7 +47,8 @@ type VapiBody = {
  * caller only ever gets a demo caller's view.
  */
 export function callIdentity(body: unknown): { org?: string; callerNumber?: string } {
-  const b = (body ?? {}) as VapiBody;
+  const outer = (body ?? {}) as VapiBody;
+  const b = outer.message && !outer.messages ? outer.message : outer;
   const system = (b.messages ?? []).find((m) => m.role === 'system');
   const text = system ? textOf(system.content) : '';
   const tag = (name: string) => /^[\w-]+$/.exec(new RegExp(`\\b${name}=(\\S+)`).exec(text)?.[1] ?? '')?.[0];
@@ -204,5 +207,50 @@ export function vapiApi(
     res.end();
   });
 
+  /**
+   * Vapi's end-of-call report (set up by vapi:setup): why the call ended —
+   * "customer-ended-call", "silence-timed-out", "assistant-said-end-call-phrase"
+   * — and how long it ran. Logged in one line, no content, and kept on the
+   * session so `npm run calls` can show it. A call the caller hung up on
+   * mid-conversation is closed here, so it doesn't read as still going.
+   */
+  r.post('/events', (req, res) => {
+    const m = ((req.body ?? {}) as { message?: EndOfCallReport }).message;
+    if (m?.type !== 'end-of-call-report') return res.json({ ok: true });
+    const id = String(m.call?.id ?? '');
+    const seconds =
+      typeof m.durationSeconds === 'number'
+        ? m.durationSeconds
+        : m.startedAt && m.endedAt
+          ? (Date.parse(m.endedAt) - Date.parse(m.startedAt)) / 1000
+          : undefined;
+    const reason = String(m.endedReason ?? 'unknown');
+    const centre = (db.prepare(`SELECT name FROM centres WHERE id = 1`).get() as { name: string } | undefined)?.name;
+    console.log(
+      `  vapi end   ${id.slice(0, 8)} → ${centre ?? '?'}: ${reason}` +
+        `${seconds !== undefined && Number.isFinite(seconds) ? `, ${Math.round(seconds)}s` : ''}` +
+        `${typeof m.cost === 'number' ? `, $${m.cost.toFixed(3)}` : ''}`,
+    );
+    const sessionId = id ? sessionIdForExternal(db, id) : undefined;
+    const session = sessionId ? loadSession(db, sessionId) : undefined;
+    if (session) {
+      session.data.endedReason = reason;
+      if (seconds !== undefined && Number.isFinite(seconds)) session.data.durationSeconds = Math.round(seconds);
+      if (session.state === 'ended') saveSession(db, session, new Date());
+      else endSession(db, session, new Date());
+    }
+    res.json({ ok: true });
+  });
+
   return r;
 }
+
+type EndOfCallReport = {
+  type?: string;
+  endedReason?: string;
+  durationSeconds?: number;
+  startedAt?: string;
+  endedAt?: string;
+  cost?: number;
+  call?: { id?: string };
+};

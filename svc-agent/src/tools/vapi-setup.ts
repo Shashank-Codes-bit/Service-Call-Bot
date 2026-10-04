@@ -99,17 +99,23 @@ export function assistantPayload({
     // own voice and a long greeting garbled a plain "yes":
     // - two words to interrupt the agent, so an echo, a cough or "um" doesn't;
     stopSpeakingPlan: { numWords: 2, voiceSeconds: 0.3, backoffSeconds: 1 },
-    // - a moment's patience before answering, so a caller isn't cut off mid-thought;
-    startSpeakingPlan: { waitSeconds: 0.6, smartEndpointingPlan: { provider: 'livekit' } },
+    // - a moment's patience before answering, so a caller isn't cut off
+    //   mid-thought ("So, basically, I…"): 0.6 s cut in on the live calls;
+    startSpeakingPlan: { waitSeconds: 0.8, smartEndpointingPlan: { provider: 'livekit' } },
     // - background noise removed before transcription.
     backgroundSpeechDenoisingPlan: { smartDenoisingPlan: { enabled: true } },
     voice,
     // A demo call, not an open line: five minutes is a whole booking twice over.
     maxDurationSeconds: 300,
-    silenceTimeoutSeconds: 20,
+    // Room to think — "which day suits me?" — before the line closes.
+    silenceTimeoutSeconds: 30,
     // The adapter ends every finished conversation with this word, and says it
     // nowhere else, so the line closes exactly when the conversation does.
     endCallPhrases: ['goodbye'],
+    // Why each call ended, for the server log and `npm run calls`
+    // (vapi.ts `/events`). The secret goes as `X-Vapi-Secret`.
+    server: { url: `${publicUrl.replace(/\/+$/, '')}/vapi/events`, secret: callSecret },
+    serverMessages: ['end-of-call-report'],
   };
 }
 

@@ -488,6 +488,63 @@ shares, with no sign-in (`src/web/dealer/try/`, `src/dealer/public.ts`).
   - To try voices: Vapi dashboard → the assistant → Voice, preview, then save
     there or copy the ID into `.env` and re-run `vapi:setup`.
 
+**A customer-centric call (2026-10-04, after the first live calls).** Live
+feedback: the agent talked too much, didn't wait for a yes, and hung up the
+moment it had booked. Now:
+- **Short sentences.** Every line in `call/templates.ts` is at most 12 words
+  a sentence and 3 sentences a template, with the question last
+  (`SENTENCE_WORDS`, `TURN_SENTENCES`). `tests/templates.test.ts` holds every
+  pool to it. Whole-call tests in `machine.test.ts` hold joined replies to it
+  too, allowing one lead-in.
+- **The greeting** checks the number by its last four digits, read one by one
+  ("…this number, ending 1 0 0 1?"), via `spokenDigits`.
+- **Lead-ins** where it really looks something up: "Let me pull up your
+  details." (`LOOKUP_ACCOUNT`) and "Let me check that day for you."
+  (`LOOKUP_DAY`). Never two in one reply.
+- **2–5 cars are read out, numbered**: "One, the Swift ending 2 2 1 3. Two,
+  the Creta… Is it one or two?". The caller can say "two", "the second one",
+  the model or the digits (`vehicleChoice`; the stub's `listChoice`, and a
+  `choice` field in the Haiku schema). Two cars of the same model ask for
+  the number instead of ending the call. More than five cars: model and last
+  four, as before.
+- **Readback before booking** (state `confirm_booking`): "So that's Friday
+  the 18th, drop at 8:30. It's back the same evening. Shall I book it?".
+  - yes → book;
+  - no → "another day or another time?";
+  - "no, make it Saturday" or "the afternoon instead" changes it straight
+    away.
+
+  Nothing is written until the yes.
+- **"Anything else?" before goodbye** (state `wrap_up`), after a booking and
+  after every routed exit, except the D11 outage exit.
+  - It answers questions, and hands anything bigger to the team.
+  - "No / that's all / thanks / bye", nothing usable, or 3 turns → sign-off
+    by first name ("Thanks Rohit, see you Friday."), then the call ends.
+  - The Vapi adapter adds "Goodbye." only then.
+
+  A routed exit's lead and SMS are written as before; `TurnResult` carries
+  `leadReason` / `bookingReference` on that turn, with `ended: false`.
+- **Listening** (`vapi:setup`): `startSpeakingPlan.waitSeconds` is 0.8 and
+  `silenceTimeoutSeconds` is 30.
+- **Why a call ended.** `vapi:setup` sets the assistant's `server.url` to
+  `${PUBLIC_URL}/vapi/events` (secret: `CALL_API_SECRET`, sent by Vapi as
+  `X-Vapi-Secret`) with `serverMessages: ['end-of-call-report']`.
+  - `POST /vapi/events` logs `vapi end <id> → <centre>: <endedReason>, <n>s`
+    and keeps `endedReason` / `durationSeconds` on the session.
+  - It closes a session the caller hung up on mid-way.
+  - Other server messages are acknowledged and ignored.
+- **`npm run calls -- <centre> [n] [all]`** (`src/tools/calls.ts`, read-only)
+  prints the last n voice calls: time, outcome, why the line closed, length,
+  and every line said. On the VM:
+  `docker compose exec app npm run calls -- voltas 3`.
+
+**Reading calls on the VM** (after deploying this):
+```bash
+cd ~/Service-Call-Bot/svc-agent/deploy/oracle
+docker compose exec app npm run calls -- voltas 3               # transcripts + why each ended
+docker compose logs --since 1h | grep -E "vapi|classifier"      # what was understood, failures
+```
+
 **End-to-end check: `npm run e2e`** (in `svc-agent/`, about 15 s). It builds the
 portal, starts a throwaway server (its own temp data, demo mode, the offline
 classifier, placeholder Vapi keys), and drives Chromium through 28 checks:
@@ -495,7 +552,8 @@ sign-in, the board, bookings, follow-ups and CSV, conversations, places,
 knowledge (live mid-call edits, pass-on, expiry, essentials to SMS), the public
 voice page (Vapi SDK loads and reaches api.vapi.ai, the browser-voice booking,
 chat, booked labels, a new demo caller booking by chat, Not found), the demo
-switch and reset-now, and 390 px phone width (32 checks as of 2026-10-04). Exit code 1 on any failure.
+switch and reset-now, and 390 px phone width (32 checks as of 2026-10-04;
+the scripted calls now say yes to the readback and close the call). Exit code 1 on any failure.
 - Run it after any change.
 - It caught the "n is not a constructor" bug when that bug was put back.
 - On a laptop, run `npx playwright install chromium` once first.
