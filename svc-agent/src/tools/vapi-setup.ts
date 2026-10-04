@@ -100,8 +100,9 @@ export function assistantPayload({
     // - two words to interrupt the agent, so an echo, a cough or "um" doesn't;
     stopSpeakingPlan: { numWords: 2, voiceSeconds: 0.3, backoffSeconds: 1 },
     // - a moment's patience before answering, so a caller isn't cut off
-    //   mid-thought ("So, basically, I…"): 0.6 s cut in on the live calls;
-    startSpeakingPlan: { waitSeconds: 0.8, smartEndpointingPlan: { provider: 'livekit' } },
+    //   mid-thought ("So, basically, I…"): 0.6 s and 0.8 s both answered
+    //   half a sentence on the live calls ("Do the same day pickup as");
+    startSpeakingPlan: { waitSeconds: 1.0, smartEndpointingPlan: { provider: 'livekit' } },
     // - background noise removed before transcription.
     backgroundSpeechDenoisingPlan: { smartDenoisingPlan: { enabled: true } },
     voice,

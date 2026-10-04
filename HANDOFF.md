@@ -538,6 +538,34 @@ moment it had booked. Now:
   and every line said. On the VM:
   `docker compose exec app npm run calls -- voltas 3`.
 
+**Fixes from the live calls at 15:08 and 15:18 (2026-10-04):**
+- **The caller carrying on.** When a caller keeps talking after a pause,
+  Vapi asks again with their message grown longer. Taken whole each time,
+  one sentence became three turns, and that handed a booking call to the
+  team. Now the adapter acts only on the new words, and not at all on an
+  exact repeat (`vapi.ts` `newWords`, with `lastHeard` / `lastHeardCount` on
+  the session). A new message counts as a new turn even when it's the same
+  "Yes." again.
+- **Patience before answering** goes up to `waitSeconds: 1.0`. At 0.8 the
+  agent answered half a sentence ("Do the same day pickup as").
+- **A fault said up front** ("can't shift the gears properly") goes on the
+  job card, and the agent doesn't then ask "is anything playing up?". The
+  open-turn schema has `kind/text`, and the stub has a `FAULT` pattern.
+- **No day named twice** gets the soonest day offered. It no longer counts
+  as forcing a full day, which had ended a call with "I can't fit that in".
+- **The same-day offer:**
+  - "same day… is that possible?" counts as a yes;
+  - an unclear answer gets asked once more;
+  - a yes now **books the visit and files a `same_day_demanded` follow-up**
+    for the service manager, instead of routing out with nothing booked.
+- **The job card collects the caller's wishes.** Centre questions answered
+  while booking go on as "Asked about: Pickup and drop". In the closing, a
+  restated booking gets "You're all set for Monday at 8:30", and anything to
+  add ("…with pickup at my home") is appended as "Caller added: …".
+- **The closing:**
+  - another car ("my wife's car") goes to the team (`otherVehicle`);
+  - an unclear answer gets asked once more before goodbye.
+
 **Reading calls on the VM** (after deploying this):
 ```bash
 cd ~/Service-Call-Bot/svc-agent/deploy/oracle

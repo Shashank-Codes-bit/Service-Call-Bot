@@ -86,6 +86,37 @@ function textOf(content: unknown): string {
   return '';
 }
 
+/**
+ * When the caller keeps talking after a pause, Vapi asks again with their
+ * message grown: "I just told you…" then "I just told you… I'm here to
+ * complain." Taken whole each time, one sentence became three turns — three
+ * re-asks, and a booking call handed to the team (live call, 2026-10-04).
+ *
+ * Returns only what is new since the words already acted on, '' when nothing
+ * is, or the whole utterance when it isn't a continuation at all.
+ */
+export function newWords(previous: string | undefined, current: string): string {
+  const norm = (w: string) => w.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const prev = (previous ?? '').split(/\s+/).map(norm).filter(Boolean);
+  const words = current.split(/\s+/).filter(Boolean);
+  if (prev.length === 0) return current.trim();
+  const cur = words.map(norm);
+  // Skip what punctuation-only tokens add, compare word by word.
+  let i = 0;
+  let j = 0;
+  while (i < prev.length && j < cur.length) {
+    if (!cur[j]) {
+      j++;
+      continue;
+    }
+    if (cur[j] !== prev[i]) return current.trim();
+    i++;
+    j++;
+  }
+  if (i < prev.length) return current.trim();
+  return words.slice(j).join(' ').trim();
+}
+
 function latestUserUtterance(messages: OpenAIMessage[] = []): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]!;
@@ -129,6 +160,7 @@ export function vapiApi(
       (named && (opts.webCaller?.(named) ?? true) ? named : undefined) ??
       (body.call?.customer?.number ?? body.customer?.number ?? '').replace(/\D/g, '').slice(-10);
     const utterance = latestUserUtterance(body.messages);
+    const heard = (body.messages ?? []).filter((m) => m.role === 'user').length;
 
     if (!externalId) {
       return res.status(400).json({ error: { message: 'no call id on the request' } });
@@ -157,20 +189,27 @@ export function vapiApi(
         reply = utterance
           ? (await handleTurn(db, deps, sessionId, utterance)).reply
           : opened.reply;
+        if (utterance) rememberHeard(db, sessionId, utterance, heard);
       } else if (!utterance) {
         // A turn with nothing in it — stay put rather than advancing the flow
         // on silence.
         reply = '';
       } else {
         const session = loadSession(db, sessionId);
-        if (session?.state === 'ended') {
+        // A new message is a new turn, even "Yes." again. The same message
+        // grown longer is the caller carrying on: only the new words count.
+        const grown = session && heard <= (session.data.lastHeardCount ?? 0);
+        const fresh = grown ? newWords(session!.data.lastHeard, utterance) : utterance;
+        if (session?.state === 'ended' || !fresh) {
+          // Ended, or Vapi asking again with nothing new said: stay quiet.
           reply = '';
         } else {
-          const t = await handleTurn(db, deps, sessionId, utterance);
+          const t = await handleTurn(db, deps, sessionId, fresh);
           reply = t.reply;
           // Labels only — what the agent understood, never what was said.
           if (t.understood) console.log(`  vapi turn  ${externalId.slice(0, 8)} ${t.understood}${t.ended ? ' · call ended' : ''}`);
         }
+        rememberHeard(db, sessionId, utterance, heard);
       }
       // The conversation is over: say so in the one word the assistant is set
       // to hang up on (vapi-setup.ts), so the line closes with the call.
@@ -243,6 +282,15 @@ export function vapiApi(
   });
 
   return r;
+}
+
+/** The caller's message as Vapi last sent it, whole, for `newWords` next time. */
+function rememberHeard(db: Database, sessionId: string, utterance: string, count: number): void {
+  const s = loadSession(db, sessionId);
+  if (!s || (s.data.lastHeard === utterance && s.data.lastHeardCount === count)) return;
+  s.data.lastHeard = utterance;
+  s.data.lastHeardCount = count;
+  saveSession(db, s, new Date());
 }
 
 type EndOfCallReport = {

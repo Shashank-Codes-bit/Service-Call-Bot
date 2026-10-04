@@ -263,6 +263,18 @@ export const READBACK = [
   'Let me read that back. {date}, drop at {time}, back {back}. Shall I book it?',
 ] as const;
 
+/** They want same-day: noted for the service manager, and the visit still booked. */
+export const SAME_DAY_NOTED = [
+  "Sure, I'll ask them to call you about same-day.",
+  "Okay, they'll call you about getting it back the same day.",
+] as const;
+
+/** The nudge, re-asked once when the answer wasn't a clear yes or no. */
+export const NUDGE_REASK = [
+  'Would you like them to try for same-day? Yes or no?',
+  'Shall I ask them about same-day for you?',
+] as const;
+
 export const READBACK_REASK = ['Sorry, shall I go ahead and book it?', 'Shall I book that in for you?'] as const;
 
 /** They said no to the readback without saying what to change. */
@@ -289,6 +301,12 @@ export const ANYTHING_ELSE = ['Anything else I can help with?', 'Is there anythi
 export const ANYTHING_ELSE_AFTER_EXIT = ['Anything else before I let you go?', 'Is there anything else I can do?'] as const;
 /** After an answer in the closing: shorter, as the question has been asked once. */
 export const ANYTHING_ELSE_AGAIN = ['Anything else?', 'Anything more I can help with?'] as const;
+/** The caller said the booking again in the closing: it's done, say so. */
+export const ALL_SET = ["You're all set for {day} at {time}.", "That's booked for {day}, {time} drop-off."] as const;
+/** Something to add to the booking, said in the closing: it goes on the job card. */
+export const ADDED_TO_BOOKING = ["I've added that to your booking for the team.", "I've noted that on the job card."] as const;
+/** The closing answer wasn't clear: ask once more before saying goodbye. */
+export const WRAP_REASK = ['Sorry, is there anything else?', 'Sorry, anything else I can do for you?'] as const;
 /** "Yes" with nothing after it. */
 export const GO_AHEAD = ['Sure, go ahead.', "Of course. What is it?"] as const;
 /** Something the agent can't do from here — another car, a change to a booking. */

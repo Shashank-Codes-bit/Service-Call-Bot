@@ -105,19 +105,33 @@ function schemaFor(state: CallState, models: string[], kbKeys: string[]) {
   switch (state) {
     case 'greeting':
     case 'confirm':
-    case 'wrap_up':
       return z.object({ ...overlay, answer: YESNO });
+    case 'wrap_up':
+      // "Book it for 8:30 with pickup at my home" — a request to add, not a no.
+      return z.object({
+        ...overlay,
+        answer: YESNO,
+        intent: z.enum(['book', 'other', 'unclear']),
+        kind: z.enum(['special_request', 'nothing']),
+        text: z.string().describe('Anything they asked to add or have done (e.g. a pickup), in their own words, else "".'),
+        other_car: z.boolean().describe('True only when they want something for a DIFFERENT car from the one just discussed.'),
+        ...day,
+      });
     case 'confirm_booking':
       // "No, make it Saturday" changes the booking in the same breath.
       return z.object({ ...overlay, ...day, answer: YESNO });
     case 'vehicle':
       return z.object({ ...overlay, ...vehicle, ...choice });
     case 'open_turn':
+      // Callers often describe the fault in their first sentence; asking
+      // "is anything wrong?" after that sounded like the agent wasn't listening.
       return z.object({
         ...overlay,
         intent: z.enum(['book', 'other', 'unclear']),
         ...vehicle,
         ...day,
+        kind: z.enum(['complaint', 'nothing']),
+        text: z.string().describe("A fault with the car they described, in their own words, else \"\"."),
       });
     case 'complaint':
       return z.object({
@@ -218,12 +232,12 @@ export class HaikuClassifier implements Classifier {
 function describeState(state: CallState): string {
   switch (state) {
     case 'greeting': return 'We asked whether the number they are calling from is the one the car is registered under.';
-    case 'open_turn': return 'We asked how we can help. They may state intent, car, day and slot all at once.';
+    case 'open_turn': return 'We asked how we can help. They may state intent, car, day, slot and a fault with the car all at once. Wanting a fault fixed or checked is intent "book" with kind "complaint".';
     case 'complaint': return 'We asked whether anything is actually wrong with the car.';
     case 'special_request': return 'We asked whether they want anything else done while it is in.';
     case 'day': return 'We asked which day they want to bring it in.';
     case 'drop_slot': return 'We offered a morning or afternoon drop-off.';
-    case 'confirm': return 'We asked whether they want the workshop to try for same-day return.';
+    case 'confirm': return 'We asked whether they want the workshop to try for same-day return. Asking for it back the same day, or "is that possible?", is yes.';
     case 'confirm_booking': return 'We read the booking back and asked "Shall I book it?". yes = book it; no = they want to change it (they may name a new day or time).';
     case 'wrap_up': return 'We asked "Anything else?" after finishing. no = they are done ("no, that\'s all", "thanks", "bye"); yes = they want something more.';
     case 'vehicle': return 'We read out their cars as a numbered list and asked which one. They may say the number, the model, or the last four digits.';
@@ -262,6 +276,7 @@ export function toClassification(req: ClassifyRequest, p: Parsed): Classificatio
 
   const model = p['model'];
   if (typeof model === 'string' && model !== 'none') out.vehicleModel = model;
+  if (p['other_car'] === true) out.otherVehicle = true;
   const choice = p['choice'];
   if (typeof choice === 'string' && /^[1-5]$/.test(choice)) out.vehicleChoice = Number(choice);
   const last4 = p['last4'];

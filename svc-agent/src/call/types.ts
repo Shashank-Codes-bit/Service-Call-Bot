@@ -83,6 +83,18 @@ export type SessionData = {
   vehicleListed?: boolean;
   /** Turns spent in the closing "Anything else?", capped so it ends. */
   wrapTurns?: number;
+  /** The closing was re-asked once after an unclear answer. */
+  wrapReasked?: boolean;
+  /** The same-day nudge was re-asked once after an unclear answer. */
+  nudgeReasked?: boolean;
+  /** "Which day?" asked again once already; next time we offer the soonest. */
+  dayReasked?: boolean;
+  /** Centre topics the caller asked about before booking, for the job card. */
+  askedAbout?: string[];
+  /** The caller's last message as the voice layer sent it, whole (vapi.ts `newWords`). */
+  lastHeard?: string;
+  /** How many caller messages Vapi had sent by then: one more is a new turn. */
+  lastHeardCount?: number;
   /** Vapi's end-of-call report: why the line closed, and how long it was open. */
   endedReason?: string;
   durationSeconds?: number;
