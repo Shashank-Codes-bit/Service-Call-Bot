@@ -226,7 +226,7 @@ describe('why a call ended (Vapi end-of-call report)', () => {
     const p = assistantPayload({ publicUrl: 'https://example.sslip.io/', callSecret: 'cs' });
     expect(p.server).toEqual({ url: 'https://example.sslip.io/vapi/events', secret: 'cs' });
     expect(p.serverMessages).toEqual(['end-of-call-report']);
-    expect(p.startSpeakingPlan.waitSeconds).toBe(0.8);
+    expect(p.startSpeakingPlan.waitSeconds).toBe(1.0);
     expect(p.silenceTimeoutSeconds).toBe(30);
   });
 
@@ -243,5 +243,34 @@ describe('why a call ended (Vapi end-of-call report)', () => {
     const text = lines.join('\n');
     expect(text).toMatch(/stopped at "greeting" · line closed: silence-timed-out · 95s|no booking · line closed: silence-timed-out · 95s/);
     expect(text).toMatch(/agent  Hi, Centre B/);
+  });
+});
+
+describe('a caller who carries on talking (Vapi resends the message, longer)', () => {
+  const sys = { role: 'system', content: 'svc-agent org=centre-a caller=9810011001' };
+  const send = (id: string, messages: unknown[]) =>
+    request(app).post('/vapi/chat/completions').set('authorization', `Bearer ${SECRET}`).send({ stream: false, call: { id }, messages }).expect(200);
+  const callerLines = (id: string) =>
+    (registry.get('centre-a')!.db
+      .prepare(`SELECT t.text FROM transcripts t JOIN sessions s ON s.id = t.session_id
+                WHERE json_extract(s.data, '$.externalId') = ? AND t.speaker = 'caller' ORDER BY t.turn_index`)
+      .all(id) as { text: string }[]).map((r) => r.text);
+
+  it('acts only on the new words, and not at all on a repeat', async () => {
+    await send('grow-1', [sys]);
+    await send('grow-1', [sys, { role: 'user', content: 'Yes.' }]);
+    const first = 'I want to book a service.';
+    const grown = `${first} Friday if you have it.`;
+    await send('grow-1', [sys, { role: 'user', content: 'Yes.' }, { role: 'user', content: first }]);
+    await send('grow-1', [sys, { role: 'user', content: 'Yes.' }, { role: 'user', content: grown }]);
+    await send('grow-1', [sys, { role: 'user', content: 'Yes.' }, { role: 'user', content: grown }]);
+    expect(callerLines('grow-1')).toEqual(['Yes.', first, 'Friday if you have it.']);
+  });
+
+  it('still takes the same words said again as a new message', async () => {
+    await send('grow-2', [sys]);
+    await send('grow-2', [sys, { role: 'user', content: 'Yes.' }]);
+    await send('grow-2', [sys, { role: 'user', content: 'Yes.' }, { role: 'assistant', content: '…' }, { role: 'user', content: 'Yes.' }]);
+    expect(callerLines('grow-2')).toEqual(['Yes.', 'Yes.']);
   });
 });

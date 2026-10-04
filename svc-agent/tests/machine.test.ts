@@ -298,6 +298,12 @@ describe('the same-day nudge (D7)', () => {
     // that spells it without a hyphen.
     expect(turns.map((t) => t.state)).toContain('confirm');
     expect(turns.at(-1)!.leadReason).toBe('same_day_demanded');
+    // …and the visit is still offered for booking, with the wish on the card.
+    expect(turns.at(-1)!.state).toBe('confirm_booking');
+    const booked = await handleTurn(db, deps, turns[0]!.sessionId, 'Yes.', MONDAY);
+    expect(booked.bookingReference).toBeDefined();
+    const note = (db.prepare(`SELECT complaint_note n FROM bookings WHERE booking_reference = ?`).get(booked.bookingReference!) as { n: string }).n;
+    expect(note).toMatch(/same day/);
   });
 
   it('books normally when the nudge is declined', async () => {
@@ -937,5 +943,75 @@ describe('sounding like a person at a desk', () => {
     const turns = await call('9810011001', ['Yes.', 'Nexon service.', 'No.', 'No.', 'Friday.']);
     expect(T.LOOKUP_ACCOUNT.some((l) => turns[1]!.reply.startsWith(l))).toBe(true);
     expect(T.LOOKUP_DAY.some((l) => turns.at(-1)!.reply.startsWith(l))).toBe(true);
+  });
+});
+
+describe('the live calls of 2026-10-04, 15:08 and 15:18', () => {
+  it('takes a fault said up front, and does not ask about it again', async () => {
+    const turns = await call('9810022002', [
+      'Yes.',
+      'The first 1.',
+      "I just wanted to bring in the car because I'm having a complaint that not able to shift the gears properly. Facing some issue while gear changing.",
+    ]);
+    const last = turns.at(-1)!;
+    expect(last.state).toBe('day');
+    expect(last.reply).toMatch(/job card|noted/);
+    expect(last.reply).not.toMatch(/playing up|anything wrong/i);
+    const s = db.prepare(`SELECT json_extract(data, '$.complaintNote') n, json_extract(data, '$.pool') p FROM sessions WHERE id = ?`).get(turns[0]!.sessionId) as { n: string; p: string };
+    expect(s.n).toMatch(/gears/);
+    expect(s.p).toBe('complaint');
+  });
+
+  it('offers the soonest day when none is named twice, never "can\'t fit that in"', async () => {
+    const turns = await call('9810022002', [
+      'Yes.',
+      'The first 1.',
+      'I have a problem shifting the gears.',
+      "I'm here to complain about the car.",
+      'I want to get the car fixed.',
+    ]);
+    const last = turns.at(-1)!;
+    expect(last.leadReason).toBeUndefined();
+    expect(last.state).toBe('drop_slot');
+    expect(last.reply).toMatch(/soonest|First I can do/i);
+    expect(said(turns)).not.toMatch(/can't fit that in/);
+  });
+
+  it('hears "same day… is that possible?" at the nudge as a yes', async () => {
+    const turns = await call('9810055005', [
+      'Yes.', 'Fortuner service.', 'No.', 'No.', 'Friday.', 'Afternoon.',
+      'And drop off to my home by the same day. Is that possible?',
+    ]);
+    expect(turns.at(-1)!.leadReason).toBe('same_day_demanded');
+  });
+
+  it('asks the nudge again when the answer is not clear', async () => {
+    const turns = await call('9810055005', ['Yes.', 'Fortuner service.', 'No.', 'No.', 'Friday.', 'Afternoon.', 'Hmm, let me think.']);
+    expect(turns.at(-1)!.state).toBe('confirm');
+    expect(turns.at(-1)!.reply).toMatch(/same-day/);
+  });
+
+  it('puts a question asked while booking, and a wish added after, on the job card', async () => {
+    const turns = await call('9810011001', [
+      'Yes.', 'Nexon service Friday.', 'No.', 'No.', 'Morning.',
+      'Do you do pickup and drop?',
+      'Yes.',
+      'Okay. Yes. So book the service for Friday, 8 30, with pickup at my home.',
+    ]);
+    const last = turns.at(-1)!;
+    expect(last.state).toBe('wrap_up');
+    expect(last.reply).toMatch(/all set for Friday|booked for Friday/);
+    expect(last.reply).toMatch(/added that|job card/);
+    const note = (db.prepare(`SELECT complaint_note n FROM bookings WHERE booking_reference = ?`).get(turns.at(-2)!.bookingReference!) as { n: string }).n;
+    expect(note).toMatch(/Asked about: .*[Pp]ick/);
+    expect(note).toMatch(/Caller added: .*pickup at my home/);
+  });
+
+  it('asks once more when the closing answer is unclear, then says goodbye', async () => {
+    const booked = ['Yes.', 'Nexon service Friday.', 'No.', 'No.', 'Morning.', 'Yes.'];
+    const turns = await call('9810011001', [...booked, 'Hmm.', 'Hmm.']);
+    expect(turns.at(-2)!.reply).toMatch(/^Sorry/);
+    expect(turns.at(-2)!.ended).toBe(false);
+    expect(turns.at(-1)!.ended).toBe(true);
   });
 });

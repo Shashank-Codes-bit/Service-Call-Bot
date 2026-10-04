@@ -49,6 +49,8 @@ export type Classification = {
   vehicleLast4?: string;
   /** "Two", "the second one" — a car picked from the numbered list we read out (1-based). */
   vehicleChoice?: number;
+  /** "Can I also book my wife's car?" — a different car from the one this call is about. */
+  otherVehicle?: boolean;
 
   /** Resolved to a date by the LLM; **bookability is decided by our code**. */
   day?: IsoDate;
@@ -176,6 +178,10 @@ export function matchKbKey(utterance: string, topics: Array<string | KbTopic> = 
   return best?.key;
 }
 
+/** Words that describe something wrong with a car, for the open turn. */
+const FAULT =
+  /\bnoise\b|\brattl|\bsqueal|\bgrind|\bwarning light\b|\bnot working\b|\bproblem\b|\bissue\b|\bfault\b|\bleak|\bvibrat|\bsmoke\b|\bgears?\b|\bbrakes?\b|\bclutch\b|\bcomplain/;
+
 const ORDINALS = ['first', 'second', 'third', 'fourth', 'fifth'];
 const NUMBERS = ['one', 'two', 'three', 'four', 'five'];
 
@@ -273,6 +279,25 @@ export class StubClassifier implements Classifier {
 
     if (/\bmorning\b|\bam\b|\b8[:.]?30\b/.test(t)) out.dropSlot = 'morning';
     else if (/\bafternoon\b|\bpm\b|\b2 ?o'?clock\b/.test(t)) out.dropSlot = 'afternoon';
+
+    // A fault in the first sentence: "I can't shift the gears properly".
+    if (req.state === 'open_turn' && !out.outOfBand && FAULT.test(t)) {
+      out.complaint = req.utterance.trim();
+      out.intent = 'book';
+    }
+
+    // The closing: another car is its own call; anything else to add —
+    // "with pickup at my home" — is a request for this booking.
+    if (req.state === 'wrap_up' && out.yesNo !== 'no' && !out.outOfBand) {
+      if (/\b(also|another|other|second|wife'?s?|husband'?s?|son'?s?|daughter'?s?|father'?s?|mother'?s?)\b.*\b(car|vehicle)\b/.test(t)) {
+        out.otherVehicle = true;
+      } else if (t.split(/\s+/).length > 3) {
+        out.specialRequest = req.utterance.trim();
+      }
+    }
+
+    // The same-day nudge: asking for it the same day is a yes.
+    if (req.state === 'confirm' && !out.yesNo && /\bsame.?day\b|\btoday\b|\bsame evening\b/.test(t)) out.yesNo = 'yes';
 
     if (req.state === 'complaint') {
       if (out.yesNo === 'no' || /\bnothing\b|\bit'?s fine\b|\ball good\b|\bno issues?\b/.test(t)) {

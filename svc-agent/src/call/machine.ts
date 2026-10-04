@@ -219,6 +219,11 @@ async function turn(
       passOn(ctx, cls.generalQuestion ?? utterance);
       return answerAndResume(ctx, T.pick(T.KB_PASSED, seed));
     }
+    // "Can you do pickup?" asked while booking is a wish the workshop should
+    // see: it goes on the job card with the booking.
+    const topic = request.kbTopics.find((t) => t.key === cls.kbKey)?.title ?? cls.kbKey!;
+    if (d.bookingReference) addToBooking(ctx, `Asked about: ${topic}`);
+    else if (d.vehicleId) d.askedAbout = [...new Set([...(d.askedAbout ?? []), topic])];
     return answerAndResume(ctx, answer);
   }
   // A caller answering the question we asked is answering it. Over a voice
@@ -276,6 +281,8 @@ async function turn(
       // "Book it in as soon as you can" answers the day question before we
       // ask it, so don't then ask it (E7).
       if (cls.noPreference) d.noDayPreference = true;
+      // "I can't shift the gears properly" — the fault, said up front.
+      if (cls.complaint && !cls.nothing) d.complaintNote = cls.complaint;
       return afterIntent(ctx);
 
     case 'complaint':
@@ -300,9 +307,11 @@ async function turn(
         // "Whenever suits you" is an answer, not a refusal — charging it a
         // pushback routed out a caller who was being easy to deal with.
         if (cls.noPreference) return offerFirstAvailable(ctx);
-        const p = registerPushback(d.pushback);
-        d.pushback = p.count;
-        if (p.exhausted) return routeOut(ctx, 'forced_full_day', T.pick(T.EXIT.forced_full_day, seed));
+        // No day named twice: offer the soonest rather than ask a third time.
+        // Counting it as "forcing a full day" handed a caller who only wanted
+        // their car fixed to the team with "I can't fit that in" (live call).
+        if (d.dayReasked) return offerFirstAvailable(ctx);
+        d.dayReasked = true;
         return say(ctx, 'day', T.pick(T.ASK_DAY.reask, seed));
       }
       return considerDay(ctx, cls.day);
@@ -333,7 +342,20 @@ async function turn(
       // The same-day nudge, answered. Wanting it routes out — we cannot see
       // the workshop's real load, so we never invent a same-day slot (D7).
       if (cls.yesNo === 'yes') {
-        return routeOut(ctx, 'same_day_demanded', T.pick(T.EXIT.same_day_demanded, seed));
+        // They want it back the same day. We can't promise that (D7) — but
+        // they still want the visit, so book it as offered, and the service
+        // manager calls about same-day. Routing out instead left a caller who
+        // asked for more with nothing booked at all.
+        fileLead(ctx, 'same_day_demanded');
+        d.sameDayNudgeDeclined = true;
+        d.complaintNote = [d.complaintNote, 'Wants it back the same day if possible.'].filter(Boolean).join('\n');
+        return { ...readBack(ctx, T.pick(T.SAME_DAY_NOTED, seed)), leadReason: 'same_day_demanded' };
+      }
+      // Not a clear answer: ask once, plainly. Reading anything but "yes" as
+      // a no booked next-day for a caller asking for same-day (live call).
+      if (cls.yesNo !== 'no' && !d.nudgeReasked) {
+        d.nudgeReasked = true;
+        return say(ctx, 'confirm', T.pick(T.NUDGE_REASK, seed));
       }
       d.sameDayNudgeDeclined = true; // never raise it again
       return readBack(ctx);
@@ -356,14 +378,39 @@ async function turn(
 
     case 'wrap_up': {
       if ((d.wrapTurns ?? 0) >= WRAP_TURNS) return signOff(ctx);
+      const booked = Boolean(d.bookingReference);
       const words = utterance.trim().split(/\s+/).filter(Boolean).length;
+      // Another car is its own call (D12): the team has it.
+      if (cls.otherVehicle) return say(ctx, 'wrap_up', T.pick(T.WRAP_FOR_THE_TEAM, seed));
+      const restates = cls.intent === 'book' || Boolean(cls.day) || Boolean(cls.dropSlot);
+      // Said again, or something to add: the booking is done, so say so, and
+      // the extra goes on the job card ("…with pickup at my home").
+      if (booked && (restates || cls.specialRequest)) {
+        const parts: string[] = [];
+        if (restates) {
+          parts.push(
+            T.fill(T.pick(T.ALL_SET, seed), { day: T.spokenDay(d.bookingDate!), time: T.spokenDropTime(d.dropSlot!) }),
+          );
+        }
+        if (cls.specialRequest) {
+          addToBooking(ctx, `Caller added: ${cls.specialRequest}`);
+          parts.push(T.pick(T.ADDED_TO_BOOKING, seed));
+        }
+        parts.push(T.pick(T.ANYTHING_ELSE_AGAIN, seed));
+        return say(ctx, 'wrap_up', parts.join(' '));
+      }
+      if (cls.yesNo === 'no') return signOff(ctx);
       if (cls.yesNo === 'yes' && words <= 3) return say(ctx, 'wrap_up', T.pick(T.GO_AHEAD, seed));
-      // Something more than a question: another car, a change to the booking.
-      // Not for this call (D12); the team has it, and their number is in the text.
-      if (cls.yesNo === 'yes' || cls.intent === 'book' || cls.day || cls.vehicleModel || cls.complaint) {
+      // Something more than a question: another car, a booking we couldn't
+      // make. Not for this call (D12); the team has it, and their number.
+      if (cls.yesNo === 'yes' || restates || cls.specialRequest || cls.vehicleModel || cls.complaint) {
         return say(ctx, 'wrap_up', T.pick(T.WRAP_FOR_THE_TEAM, seed));
       }
-      // "No, that's all", "thanks", "bye" — or nothing we can use: close.
+      // Not clear: ask once more rather than hang up on a question.
+      if (!d.wrapReasked) {
+        d.wrapReasked = true;
+        return say(ctx, 'wrap_up', T.pick(T.WRAP_REASK, seed));
+      }
       return signOff(ctx);
     }
 
@@ -446,7 +493,7 @@ function resumeQuestion(ctx: Ctx): { text: string; digits?: boolean } {
 /** Whether a classification says anything a step can act on. */
 function readsSomething(c: Classification): boolean {
   return Boolean(
-    c.yesNo || c.day || c.dropSlot || c.noPreference || c.vehicleModel || c.vehicleLast4 || c.vehicleChoice ||
+    c.yesNo || c.day || c.dropSlot || c.noPreference || c.vehicleModel || c.vehicleLast4 || c.vehicleChoice || c.otherVehicle ||
       c.outOfBand || c.intent || c.complaint || c.specialRequest || c.nothing,
   );
 }
@@ -529,6 +576,15 @@ export async function answerQuestion(
   return { kind: 'answer', key: cls.kbKey, title, answer, shortlisted };
 }
 
+/** A line on the booking's job card, added after it was made. */
+function addToBooking(ctx: Ctx, line: string): void {
+  ctx.db
+    .prepare(
+      `UPDATE bookings SET complaint_note = COALESCE(complaint_note || char(10), '') || ? WHERE booking_reference = ?`,
+    )
+    .run(line, ctx.session.data.bookingReference);
+}
+
 /** Caller turns the closing "Anything else?" may take before we say goodbye. */
 const WRAP_TURNS = 3;
 
@@ -539,6 +595,16 @@ const WRAP_TURNS = 3;
  * closing itself also ends, so the closing can't loop.
  */
 function routeOut(ctx: Ctx, reason: LeadReason, reply: string, opts: { end?: boolean } = {}): TurnResult {
+  const d = ctx.session.data;
+  fileLead(ctx, reason);
+  d.leadReason = reason;
+  if (opts.end) return endCall(ctx, reply);
+  if (ctx.session.state === 'wrap_up') return signOff(ctx, reply);
+  return { ...say(ctx, 'wrap_up', `${reply} ${T.pick(T.ANYTHING_ELSE_AFTER_EXIT, ctx.seed)}`), leadReason: reason };
+}
+
+/** A follow-up for the right team, with everything the call knows, and the workshop's number by SMS (F1, F2). */
+function fileLead(ctx: Ctx, reason: LeadReason): number {
   const d = ctx.session.data;
   const leadId = insertLead(
     ctx.db,
@@ -560,11 +626,7 @@ function routeOut(ctx: Ctx, reason: LeadReason, reply: string, opts: { end?: boo
     ),
   );
   smsForLead(ctx.db, { leadId, mobile: d.callerNumber, centre: ctx.centre, now: ctx.now });
-
-  d.leadReason = reason;
-  if (opts.end) return endCall(ctx, reply);
-  if (ctx.session.state === 'wrap_up') return signOff(ctx, reply);
-  return { ...say(ctx, 'wrap_up', `${reply} ${T.pick(T.ANYTHING_ELSE_AFTER_EXIT, ctx.seed)}`), leadReason: reason };
+  return leadId;
 }
 
 /** The last words, then the call is over. The voice layer adds "Goodbye." and hangs up. */
@@ -717,6 +779,12 @@ function afterIntent(ctx: Ctx): TurnResult {
   const assessment = assessBookability(d.due, ctx.callDate);
   if (!assessment.bookable) {
     return routeOut(ctx, assessment.reason, T.pick(T.EXIT[assessment.reason], ctx.seed));
+  }
+  // The fault was said up front: it goes on the job card, and we don't ask
+  // "is anything wrong?" about the thing they just told us (D8).
+  if (d.complaintNote) {
+    d.pool = poolFor(assessment.serviceType, true);
+    return askDay(ctx, T.pick(T.ACK_COMPLAINT, ctx.seed));
   }
   d.pool = poolFor(assessment.serviceType, false);
 
@@ -894,11 +962,12 @@ function maybeNudgeThenReadBack(ctx: Ctx): TurnResult {
 }
 
 /** Say what will be booked, and wait for a yes. Nothing is written yet. */
-function readBack(ctx: Ctx): TurnResult {
+function readBack(ctx: Ctx, lead = ''): TurnResult {
   const d = ctx.session.data;
   return say(
     ctx,
     'confirm_booking',
+    (lead ? `${lead} ` : '') +
     T.fill(T.pick(T.READBACK, ctx.seed), {
       date: T.spokenDate(d.bookingDate!),
       time: T.spokenDropTime(d.dropSlot!),
@@ -918,7 +987,9 @@ function book(ctx: Ctx): TurnResult {
       pool: d.pool!,
       bookingDate: d.bookingDate!,
       dropSlot: d.dropSlot!,
-      complaintNote: d.complaintNote ?? null,
+      complaintNote: [d.complaintNote, d.askedAbout?.length ? `Asked about: ${d.askedAbout.join(', ')}` : '']
+        .filter(Boolean)
+        .join('\n') || null,
       source: 'ai',
       now: ctx.now,
     });
