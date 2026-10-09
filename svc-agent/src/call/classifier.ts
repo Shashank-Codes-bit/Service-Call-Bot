@@ -1,6 +1,6 @@
 import { addDays, parseIsoDate, WEEKDAY_NAMES, type IsoDate } from '../shared/dates.ts';
 import type { DropSlot } from '../shared/types.ts';
-import type { CallState } from './types.ts';
+import type { CallState, ExplainTopic, FaultArea, Language } from './types.ts';
 import type { KbTopic } from '../kb/index.ts';
 
 /**
@@ -34,8 +34,19 @@ export type ClassifyRequest = {
 };
 
 export type Classification = {
-  /** D9, D10 — can arrive at any turn and must be answered, then resumed. */
-  outOfBand?: 'cost' | 'general';
+  /**
+   * D9, D10 — can arrive at any turn and must be answered, then resumed.
+   * `explain`: a question about how the booking works ("why next day?"),
+   * answered by our code from the call's state. `callback`: they want someone
+   * from the centre to call them, or to speak to a person.
+   */
+  outOfBand?: 'cost' | 'general' | 'explain' | 'callback';
+  /** Which booking question, when `outOfBand` is `explain`. */
+  explain?: ExplainTopic;
+  /** The language the caller spoke this turn in. */
+  language?: Language;
+  /** Where the fault they described is, from a closed list (B3). */
+  faultArea?: FaultArea;
   generalQuestion?: string;
   /** Which knowledge-bank entry the question matched, if any (D10). */
   kbKey?: string;
@@ -97,6 +108,95 @@ export function redactUtterance(utterance: string, redact: string[] = []): strin
 
 const WEEKDAYS = WEEKDAY_NAMES.map((d) => d.toLowerCase());
 
+/** Hindi weekday names, Sunday first like WEEKDAY_NAMES, Latin and Devanagari. */
+const HINDI_WEEKDAYS = [
+  /\b(ravivaa?r|itvaa?r)\b|रविवार|इतवार/,
+  /\bsomvaa?r\b|सोमवार/,
+  /\bmangalvaa?r\b|मंगलवार/,
+  /\bbudhvaa?r\b|बुधवार/,
+  /\b(guruvaa?r|veervaa?r|brihaspativaa?r)\b|गुरुवार|वीरवार/,
+  /\bshukravaa?r\b|शुक्रवार/,
+  /\bshanivaa?r\b|शनिवार/,
+];
+
+/**
+ * Common Hindi words in Indian-English speech, Latin script. Enough of them,
+ * or any Devanagari, and the caller is speaking Hinglish: the agent replies
+ * in Hinglish (templates.ts HI). Words English also uses ("so", "do") are
+ * left out, so "I want to do a service" stays English.
+ */
+const HINDI_WORDS = new Set([
+  'haan', 'haa', 'haanji', 'ji', 'nahi', 'nahin', 'theek', 'thik', 'hai', 'hain', 'tha', 'thi', 'kya', 'kyu', 'kyun',
+  'kaise', 'kab', 'kahan', 'mera', 'meri', 'mere', 'mujhe', 'aap', 'aapka', 'aapki', 'hum', 'hamara', 'gaadi', 'gadi',
+  'kal', 'parson', 'aaj', 'subah', 'shaam', 'dopahar', 'chahiye', 'karna', 'karni', 'karwana', 'karwani', 'karwa', 'kar',
+  'dijiye', 'kijiye', 'karo', 'wali', 'wala', 'waali', 'waala', 'pehli', 'pehla', 'doosri', 'dusri', 'doosra', 'teesri',
+  'bas', 'shukriya', 'dhanyavaad', 'dhanyawad', 'achha', 'acha', 'bilkul', 'sahi', 'mein', 'bhi', 'aur', 'kuch', 'koi',
+  'kharab', 'awaaz', 'aawaz', 'dikkat', 'chalega', 'bhai', 'bhaiya', 'saab', 'sahab', 'abhi', 'jaldi', 'milegi',
+  'ko', 'ke', 'ki', 'se', 'pe', 'wale', 'raha', 'rahi', 'rahe', 'gaya', 'gayi', 'hoga', 'karein', 'chahte', 'chahta',
+  'somvaar', 'somvar', 'mangalvaar', 'mangalvar', 'budhvaar', 'budhvar', 'guruvaar', 'guruvar', 'veervaar', 'shukravaar',
+  'shukravar', 'shanivaar', 'shanivar', 'ravivaar', 'ravivar', 'itvaar',
+]);
+
+/** True when the caller is speaking Hindi or Hinglish. */
+export function detectHinglish(utterance: string): boolean {
+  if (/[\u0900-\u097F]/.test(utterance)) return true;
+  const words = utterance.toLowerCase().split(/[^a-z']+/).filter(Boolean);
+  const hindi = words.filter((w) => HINDI_WORDS.has(w)).length;
+  return words.length <= 3 ? hindi >= 1 : hindi >= 2;
+}
+
+/** Where a described fault is, by the words used (EN and Hinglish). The model does this properly; this is the fallback. */
+export function faultAreaOf(t: string): FaultArea | undefined {
+  const areas: Array<[FaultArea, RegExp]> = [
+    ['gears', /\bgears?\b|\bgearbox\b|\bshift(ing)?\b|\bgear knob\b/],
+    ['clutch', /\bclutch\b/],
+    ['brakes', /\bbrakes?\b|\bbraking\b/],
+    ['ac', /\ba\.?c\.?\b|\bair ?con|\bcooling\b|\bnot cool/],
+    ['battery', /\bbattery\b|\bwon'?t start\b|\bstarting\b|\bself\b/],
+    ['steering', /\bsteering\b|\bpulls? to\b/],
+    ['suspension', /\bsuspension\b|\bshock(er)?s?\b|\bbumps?\b/],
+    ['warning_light', /\bwarning light\b|\bcheck engine\b|\bengine light\b|\blight (is )?on\b/],
+    ['engine', /\bengine\b|\bpickup\b(?! and)|\bmileage\b|\bsmoke\b|\boverheat/],
+    ['electrics', /\belectric(al|s)?\b|\bwiring\b|\bheadlights?\b|\bhorn\b|\bwindow\b/],
+    ['tyres', /\btyres?\b|\btires?\b|\bpuncture\b|\balignment\b/],
+    ['body', /\bdent\b|\bscratch\b|\bpaint\b|\bbumper\b|\bbody\b/],
+    ['noise', /\bnoise\b|\brattl|\bsqueal|\bgrind|\bawaaz\b|\baawaz\b|\bsound\b/],
+  ];
+  return areas.find(([, re]) => re.test(t))?.[0];
+}
+
+/** "Why next day?", "When do I get it back?" — questions about the booking itself, EN and Hinglish. */
+export function explainTopicOf(t: string, state: CallState): ExplainTopic | undefined {
+  const why = /\bwhy\b|\bkyu(n)?\b|\bkyon\b/.test(t);
+  if (why && /\bnext day\b|\btomorrow\b|\bovernight\b|\bagle din\b|\bnot (the )?same.?day\b|\bnot same\b/.test(t)) return 'next_day';
+  if (why && /\btoday\b|\baaj\b/.test(t)) return 'not_today';
+  if (why && /\bfull\b/.test(t)) return 'day_full';
+  if (why && /\b(only|just|sirf|bas)\b.*\b(morning|afternoon|subah|dopahar)\b|\bnot (the )?(morning|afternoon)\b/.test(t)) return 'one_slot';
+  if (why && /\b(number|code|otp)\b/.test(t)) return 'why_number';
+  if (why && /\b(wrong|problem|fault|complaint)\b/.test(t)) return 'why_fault';
+  if (
+    state !== 'confirm' &&
+    /\b(can|could) i (get|have) it (back )?(the )?same.?day\b|\bsame.?day (possible|milegi|mil sakti|ho sakta)\b|\bsame day (back|return)\b/.test(t)
+  )
+    return 'same_day_how';
+  if (/\bwhen (will|do|can|would) i (get|collect|pick)\b|\bwhen (will|would) (it|the car) be (ready|back|done)\b|\bkab (milegi|tak|mil)\b|\bwhat time .*\b(ready|back)\b/.test(t))
+    return 'ready_when';
+  if (/\bwhat (do|should) i (do|bring)\b|\bwhere (do|should) i (drop|bring|leave)\b|\bwhat happens (when|at|after)\b|\bkahan (chhod|laana|laani)\b/.test(t))
+    return 'drop_off';
+  if (/\b(will|do|would) i (get|receive) (a |any )?(confirmation|message|sms|text)\b|\bconfirmation (message|sms|text)?\b|\bmessage aayega\b|\bsms aayega\b/.test(t))
+    return 'confirmation';
+  if (/\b(can|could) i (change|cancel|reschedule|move)\b.*\b(later|afterwards|after)\b|\bbaad mein\b.*\b(change|badal|cancel)/.test(t)) return 'change_later';
+  return undefined;
+}
+
+/** "Can someone call me back?", "I want to talk to a person" — EN and Hinglish. */
+export function wantsCallback(t: string): boolean {
+  if (/\bi'?ll call\b|\bi will call\b|\bmain call\b/.test(t)) return false;
+  return /\bcall (me )?back\b|\bcallback\b|\bcall me\b|\bcan someone call\b|\bhave (someone|them|somebody) call\b|\b(speak|talk) (to|with) (a |the |an |some )?(real )?(person|human|someone|somebody|manager|advisor|agent|executive)\b|\bcall karwa|\bcall kar (dena|do|dijiye)\b|\bbaat karwa/.test(
+    t,
+  );
+}
+
 /** Next occurrence of a named weekday, strictly after today. */
 function nextWeekday(today: IsoDate, weekday: number): IsoDate {
   const from = parseIsoDate(today).getDay();
@@ -108,9 +208,10 @@ function parseDayExpression(text: string, today: IsoDate): IsoDate | undefined {
   const iso = t.match(/\b(\d{4}-\d{2}-\d{2})\b/);
   if (iso) return iso[1];
   if (/\bday after tomorrow\b|\bparson\b/.test(t)) return addDays(today, 2);
-  if (/\btomorrow\b|\bkal\b/.test(t)) return addDays(today, 1);
+  if (/\btomorrow\b|\bkal\b|कल/.test(t)) return addDays(today, 1);
+  if (/परसों/.test(t)) return addDays(today, 2);
   for (let i = 0; i < WEEKDAYS.length; i++) {
-    if (new RegExp(`\\b${WEEKDAYS[i]}\\b`).test(t)) return nextWeekday(today, i);
+    if (new RegExp(`\\b${WEEKDAYS[i]}\\b`).test(t) || HINDI_WEEKDAYS[i]!.test(t)) return nextWeekday(today, i);
   }
   return undefined;
 }
@@ -180,10 +281,13 @@ export function matchKbKey(utterance: string, topics: Array<string | KbTopic> = 
 
 /** Words that describe something wrong with a car, for the open turn. */
 const FAULT =
-  /\bnoise\b|\brattl|\bsqueal|\bgrind|\bwarning light\b|\bnot working\b|\bproblem\b|\bissue\b|\bfault\b|\bleak|\bvibrat|\bsmoke\b|\bgears?\b|\bbrakes?\b|\bclutch\b|\bcomplain/;
+  /\bnoise\b|\brattl|\bsqueal|\bgrind|\bwarning light\b|\bnot working\b|\bproblem\b|\bissue\b|\bfault\b|\bleak|\bvibrat|\bsmoke\b|\bgears?\b|\bbrakes?\b|\bclutch\b|\bcomplain|\bkharab\b|\bawaaz\b|\baawaz\b|\bdikkat\b/;
 
 const ORDINALS = ['first', 'second', 'third', 'fourth', 'fifth'];
 const NUMBERS = ['one', 'two', 'three', 'four', 'five'];
+/** "pehli wali", "doosri" — Hindi ordinals, Latin and Devanagari. */
+const HINDI_ORDINALS = [/\bpe?h?(e)?li\b|\bpehla\b|\bpahli\b|पहली|पहला/, /\bdoo?sri\b|\bdoo?sra\b|दूसरी|दूसरा/, /\btee?sri\b|\btee?sra\b|तीसरी|तीसरा/, /\bchauthi\b|\bchautha\b|चौथी/, /\bpaanch(vi|wi)\b|पांचवी/];
+const HINDI_NUMBERS = ['ek', 'do', 'teen', 'chaar', 'paanch'];
 
 /**
  * The car picked from a numbered list: "the second one", "number two", or
@@ -193,6 +297,11 @@ export function listChoice(t: string, count: number): number | undefined {
   const inRange = (n: number) => (n >= 1 && n <= count ? n : undefined);
   const ord = ORDINALS.findIndex((w) => new RegExp(`\\b${w}\\b`).test(t));
   if (ord >= 0) return inRange(ord + 1);
+  const hiOrd = HINDI_ORDINALS.findIndex((re) => re.test(t));
+  if (hiOrd >= 0) return inRange(hiOrd + 1);
+  // "do", "teen wali" — a Hindi number said alone (so "do you…" never counts).
+  const hiNum = /^(?:number |nambar )?(ek|do|teen|chaar|paanch)(?: wali| wala| number| nambar)?[.!]?$/.exec(t.trim())?.[1];
+  if (hiNum) return inRange(HINDI_NUMBERS.indexOf(hiNum) + 1);
   const named = /\b(?:number|option|no\.?)\s*(one|two|three|four|five|[1-5])\b/.exec(t);
   const word = named?.[1] ?? /^(?:it'?s |the |um,? |uh,? )*(one|two|three|four|five|[1-5])(?: please| one)?[.!]?$/.exec(t.trim())?.[1];
   if (!word) return undefined;
@@ -209,6 +318,19 @@ export class StubClassifier implements Classifier {
       out.outOfBand = 'cost';
       return out;
     }
+    out.language = detectHinglish(req.utterance) ? 'hinglish' : 'english';
+
+    if (wantsCallback(t)) {
+      out.outOfBand = 'callback';
+      return out;
+    }
+    const topic = explainTopicOf(t, req.state);
+    if (topic) {
+      out.outOfBand = 'explain';
+      out.explain = topic;
+      return out;
+    }
+
     // A question about the centre, recognised by shape, never by a list of
     // remembered phrases — that list was what made the old knowledge bank
     // unextendable. Whether we can answer is the bank's business, not ours.
@@ -237,16 +359,22 @@ export class StubClassifier implements Classifier {
       return out;
     }
 
-    if (/^(yes|yeah|yep|yup|correct|that'?s right|right|ok|okay|sure|please do|go ahead|book it|sounds good|perfect|that works)\b/.test(t)) {
-      out.yesNo = 'yes';
-    } else if (/^(no|nope|nah|not really|that'?s not|wrong)\b/.test(t)) {
+    // "Bas, shukriya" / "rehne do" — no thanks — as much a no as "no".
+    if (/^(no|nope|nah|not really|that'?s not|wrong|nahi|nahin|na|mat|bas|rehne do|rahne do|shukriya)\b|^(नहीं|ना|बस)/.test(t)) {
       out.yesNo = 'no';
+    } else if (
+      /^(yes|yeah|yep|yup|correct|that'?s right|right|ok|okay|sure|please do|go ahead|book it|sounds good|perfect|that works|haa?n?|haanji|ji|jee|theek|thik|bilkul|sahi|chalega|kar do|kardo|book kar)\b|^(हाँ|हां|जी|ठीक|बिल्कुल)/.test(
+        t,
+      )
+    ) {
+      out.yesNo = 'yes';
     }
     // The closing "Anything else?": these all mean "no, I'm done".
+    // "Okay, thanks" and "theek hai, shukriya" are goodbyes too, not a yes.
     if (
       req.state === 'wrap_up' &&
-      out.yesNo !== 'yes' &&
-      /\bthat'?s (all|it|everything)\b|\bnothing (else|more)\b|\bno,? thanks?\b|\bthank(s| you)\b|\bbye\b|\ball good\b|\bi'?m (good|fine|done)\b/.test(t)
+      t.split(/\s+/).length <= 6 &&
+      /\bthat'?s (all|it|everything)\b|\bnothing (else|more)\b|\bno,? thanks?\b|\bthank(s| you)\b|\bbye\b|\ball good\b|\bi'?m (good|fine|done)\b|\bbas\b|\bshukriya\b|\bdhanyavaa?d\b|\bdhanyawad\b|\bkuch nahi\b|\baur kuch nahi\b|शुक्रिया|धन्यवाद|बस/.test(t)
     ) {
       out.yesNo = 'no';
     }
@@ -257,7 +385,7 @@ export class StubClassifier implements Classifier {
       if (choice) out.vehicleChoice = choice;
     }
 
-    if (/\bservice\b|\bbook\b|\bappointment\b|\bslot\b/.test(t)) out.intent = 'book';
+    if (/\bservice\b|\bbook\b|\bappointment\b|\bslot\b|\bkarwana\b|\bkarwani\b|सर्विस|बुक/.test(t)) out.intent = 'book';
 
     // Closed-set vehicle match — this caller's own cars only.
     for (const v of req.vehicles ?? []) {
@@ -272,18 +400,19 @@ export class StubClassifier implements Classifier {
     const day = parseDayExpression(t, req.today);
     if (day) out.day = day;
     else if (
-      /\bwhenever\b|\bany ?(day|time)\b|\bsoonest\b|\bearliest\b|\bfirst (one |thing )?(you|available)\b|\basap\b|\byou (pick|choose|decide)\b|\bdoesn'?t matter\b|\bup to you\b/.test(t)
+      /\bwhenever(?! i\b)(?! we\b)\b|\bany ?(day|time)\b|\bsoonest\b|\bearliest\b|\bfirst (one |thing )?(you|available)\b|\basap\b|\byou (pick|choose|decide)\b|\bdoesn'?t matter\b|\bup to you\b/.test(t)
     ) {
       out.noPreference = true;
     }
 
-    if (/\bmorning\b|\bam\b|\b8[:.]?30\b/.test(t)) out.dropSlot = 'morning';
-    else if (/\bafternoon\b|\bpm\b|\b2 ?o'?clock\b/.test(t)) out.dropSlot = 'afternoon';
+    if (/\bmorning\b|\bam\b|\b8[:.]?30\b|\bsubah\b|\bsavere\b|सुबह/.test(t)) out.dropSlot = 'morning';
+    else if (/\bafternoon\b|\bpm\b|\b2 ?o'?clock\b|\bdopahar\b|\bshaam\b|\b2 baje\b|दोपहर|शाम/.test(t)) out.dropSlot = 'afternoon';
 
     // A fault in the first sentence: "I can't shift the gears properly".
     if (req.state === 'open_turn' && !out.outOfBand && FAULT.test(t)) {
       out.complaint = req.utterance.trim();
       out.intent = 'book';
+      out.faultArea = faultAreaOf(t) ?? 'other';
     }
 
     // The closing: another car is its own call; anything else to add —
@@ -300,10 +429,11 @@ export class StubClassifier implements Classifier {
     if (req.state === 'confirm' && !out.yesNo && /\bsame.?day\b|\btoday\b|\bsame evening\b/.test(t)) out.yesNo = 'yes';
 
     if (req.state === 'complaint') {
-      if (out.yesNo === 'no' || /\bnothing\b|\bit'?s fine\b|\ball good\b|\bno issues?\b/.test(t)) {
+      if (out.yesNo === 'no' || /\bnothing\b|\bit'?s fine\b|\ball good\b|\bno issues?\b|\bsab theek\b|\bkoi (problem|dikkat) nahi\b/.test(t)) {
         out.nothing = true;
       } else if (!out.outOfBand) {
         out.complaint = req.utterance.trim();
+        out.faultArea = faultAreaOf(t) ?? 'other';
       }
     }
 

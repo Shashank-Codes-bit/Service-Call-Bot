@@ -27,13 +27,13 @@ import {
   SlotFullError,
 } from '../shared/bookings.ts';
 import { buildLead, insertLead } from '../shared/leads.ts';
-import type { Classification, Classifier } from './classifier.ts';
+import { detectHinglish, type Classification, type Classifier } from './classifier.ts';
 import { TableKnowledgeBank, type KnowledgeBank } from '../kb/index.ts';
 import type { Crm } from './crm.ts';
 import { appendTranscript, createSession, endSession, loadSession, saveSession, type Session } from './session.ts';
 import { smsForBooking, smsForLead, type Centre } from './sms.ts';
 import * as T from './templates.ts';
-import type { CallState, SessionData, TurnResult } from './types.ts';
+import type { CallState, ExplainTopic, SessionData, TurnResult } from './types.ts';
 import type { DropSlot } from '../shared/types.ts';
 
 export type CallDeps = {
@@ -93,7 +93,8 @@ export async function startCall(
     ...(externalId ? { externalId } : {}),
   };
   const session = createSession(db, data, now);
-  const reply = T.fill(T.pick(T.GREETING, 0), {
+  // Always English: we don't know how the caller speaks yet.
+  const reply = T.fill(T.pick(T.EN.GREETING, 0), {
     centre: centre.name,
     last4: T.spokenDigits(callerNumber.slice(-4)),
   });
@@ -152,7 +153,7 @@ async function turn(
   if (session.state === 'wrap_up') d.wrapTurns = (d.wrapTurns ?? 0) + 1;
   const callDate = today(new Date(d.startedAt));
 
-  const ctx: Ctx = { db, deps, session, now, seed, callDate, centre: centreOf(db) };
+  const ctx: Ctx = { db, deps, session, now, seed, callDate, centre: centreOf(db), L: T.poolsFor(d.language) };
 
   const kb = deps.kb ?? new TableKnowledgeBank(db);
   const request = {
@@ -198,17 +199,31 @@ async function turn(
       d.pushback = p.count;
       if (p.exhausted) {
         // An outage, not a conversation: no "Anything else?" — it would fail too.
-        return routeOut(ctx, 'another_problem', T.pick(T.EXIT.another_problem, seed), { end: true });
+        return routeOut(ctx, 'another_problem', T.pick(ctx.L.EXIT.another_problem, seed), { end: true });
       }
       return answerAndResume(ctx, '');
     }
   }
   d.lastCallerWords = cls.callerWords;
 
+  // Reply in the language the caller is speaking. Hinglish once they use
+  // Hindi words; back to English after two plain-English turns, so it
+  // follows them. "Yes" and "okay" are both, so short turns don't count.
+  if (cls.language === 'hinglish' || detectHinglish(utterance)) {
+    d.language = 'hinglish';
+    d.englishTurns = 0;
+  } else if (d.language === 'hinglish' && utterance.trim().split(/\s+/).length >= 3) {
+    d.englishTurns = (d.englishTurns ?? 0) + 1;
+    if (d.englishTurns >= 2) d.language = 'english';
+  }
+  ctx.L = T.poolsFor(d.language);
+
   // The always-on overlay (D9, D10) — answerable at ANY point, then we return
   // to exactly where the conversation was.
+  if (cls.outOfBand === 'callback') return callBack(ctx, utterance);
+  if (cls.outOfBand === 'explain' && cls.explain) return answerAndResume(ctx, explain(ctx, cls.explain));
   if (cls.outOfBand === 'cost') {
-    return answerAndResume(ctx, T.pick(T.COST_ANSWER, seed));
+    return answerAndResume(ctx, T.pick(ctx.L.COST_ANSWER, seed));
   }
   if (cls.outOfBand === 'general') {
     // The classifier chose from the dealer's own published topics, or said
@@ -217,7 +232,7 @@ async function turn(
     const answer = cls.kbKey ? kb.answerFor(cls.kbKey, callDate) : undefined;
     if (!answer) {
       passOn(ctx, cls.generalQuestion ?? utterance);
-      return answerAndResume(ctx, T.pick(T.KB_PASSED, seed));
+      return answerAndResume(ctx, T.pick(ctx.L.KB_PASSED, seed));
     }
     // "Can you do pickup?" asked while booking is a wish the workshop should
     // see: it goes on the job card with the booking.
@@ -236,19 +251,19 @@ async function turn(
     ((session.state === 'awaiting_number' || session.state === 'awaiting_otp') && /\d{4,}/.test(utterance.replace(/\s/g, '')));
   note.understood = labels(session.state, cls, cls.intent === 'another_problem' && answering);
   if (cls.intent === 'another_problem' && !answering) {
-    return routeOut(ctx, 'another_problem', T.pick(T.EXIT.another_problem, seed));
+    return routeOut(ctx, 'another_problem', T.pick(ctx.L.EXIT.another_problem, seed));
   }
 
   switch (session.state) {
     case 'greeting':
       return cls.yesNo === 'no'
-        ? say(ctx, 'awaiting_number', T.pick(T.ASK_REGISTERED_NUMBER, seed), { digits: true })
+        ? say(ctx, 'awaiting_number', T.pick(ctx.L.ASK_REGISTERED_NUMBER, seed), { digits: true })
         : identify(ctx, d.callerNumber);
 
     case 'awaiting_number': {
       const digits = utterance.replace(/\D/g, '');
       if (digits.length !== 10) {
-        return say(ctx, 'awaiting_number', T.pick(T.ASK_REGISTERED_NUMBER, seed + 1), { digits: true });
+        return say(ctx, 'awaiting_number', T.pick(ctx.L.ASK_REGISTERED_NUMBER, seed + 1), { digits: true });
       }
       d.otpCode = String(Math.floor(1000 + Math.random() * 9000));
       d.callerNumber = digits;
@@ -258,7 +273,7 @@ async function turn(
         `Your verification code is ${d.otpCode}`,
         timestamp(now),
       );
-      return say(ctx, 'awaiting_otp', T.pick(T.ASK_OTP, seed), { digits: true });
+      return say(ctx, 'awaiting_otp', T.pick(ctx.L.ASK_OTP, seed), { digits: true });
     }
 
     case 'awaiting_otp': {
@@ -267,9 +282,9 @@ async function turn(
       // Three failures ends the call, with the lead registered against the
       // caller ID we already hold (E1, F2 #1).
       if (d.otpAttempts >= 3) {
-        return routeOut(ctx, 'number_not_found', T.pick(T.EXIT.number_not_found, seed));
+        return routeOut(ctx, 'number_not_found', T.pick(ctx.L.EXIT.number_not_found, seed));
       }
-      return say(ctx, 'awaiting_number', T.pick(T.OTP_WRONG, seed), { digits: true });
+      return say(ctx, 'awaiting_number', T.pick(ctx.L.OTP_WRONG, seed), { digits: true });
     }
 
     case 'vehicle':
@@ -282,18 +297,18 @@ async function turn(
       // ask it, so don't then ask it (E7).
       if (cls.noPreference) d.noDayPreference = true;
       // "I can't shift the gears properly" — the fault, said up front.
-      if (cls.complaint && !cls.nothing) d.complaintNote = cls.complaint;
+      if (cls.complaint && !cls.nothing) noteFault(ctx, cls);
       return afterIntent(ctx);
 
     case 'complaint':
       if (cls.complaint && !cls.nothing) {
-        d.complaintNote = cls.complaint;
+        noteFault(ctx, cls);
         // A complaint moves the job to the complaint pool (D8), and the
         // special-request question is skipped entirely.
         d.pool = poolFor(d.due!.service_type!, true);
-        return askDay(ctx, T.pick(T.ACK_COMPLAINT, seed));
+        return askDay(ctx, faultAck(ctx), T.pick(ctx.L.FAULT_NEXT_DAY, seed));
       }
-      return say(ctx, 'special_request', T.pick(T.ASK_SPECIAL_REQUEST, seed));
+      return say(ctx, 'special_request', T.pick(ctx.L.ASK_SPECIAL_REQUEST, seed));
 
     case 'special_request':
       if (cls.specialRequest && !cls.nothing) d.complaintNote = cls.specialRequest;
@@ -312,16 +327,17 @@ async function turn(
         // their car fixed to the team with "I can't fit that in" (live call).
         if (d.dayReasked) return offerFirstAvailable(ctx);
         d.dayReasked = true;
-        return say(ctx, 'day', T.pick(T.ASK_DAY.reask, seed));
+        return say(ctx, 'day', T.pick(ctx.L.ASK_DAY.reask, seed));
       }
-      return considerDay(ctx, cls.day);
+      // "Kal subah", "Friday morning": the slot came with the day.
+      return considerDay(ctx, cls.day, undefined, cls.dropSlot);
     }
 
     case 'drop_slot': {
       // "Actually, make it Saturday." The schema now carries a date at this
       // turn, so a change of mind goes back through the same day checks
       // rather than being heard as silence.
-      if (cls.day && cls.day !== d.bookingDate) return considerDay(ctx, cls.day);
+      if (cls.day && cls.day !== d.bookingDate) return considerDay(ctx, cls.day, undefined, cls.dropSlot);
       if (cls.noPreference && !d.dropSlot) return offerFirstAvailable(ctx);
       // Where only one slot is free, D6 has us state it rather than ask — so
       // "yes, that's fine" is the caller choosing the slot we just named, not
@@ -332,7 +348,7 @@ async function turn(
       if (!chosen) {
         const p = registerPushback(d.pushback);
         d.pushback = p.count;
-        if (p.exhausted) return routeOut(ctx, 'forced_full_day', T.pick(T.EXIT.forced_full_day, seed));
+        if (p.exhausted) return routeOut(ctx, 'forced_full_day', T.pick(ctx.L.EXIT.forced_full_day, seed));
         return say(ctx, 'drop_slot', reaskSlotLine(ctx));
       }
       return chooseSlot(ctx, chosen);
@@ -349,13 +365,13 @@ async function turn(
         fileLead(ctx, 'same_day_demanded');
         d.sameDayNudgeDeclined = true;
         d.complaintNote = [d.complaintNote, 'Wants it back the same day if possible.'].filter(Boolean).join('\n');
-        return { ...readBack(ctx, T.pick(T.SAME_DAY_NOTED, seed)), leadReason: 'same_day_demanded' };
+        return { ...readBack(ctx, T.pick(ctx.L.SAME_DAY_NOTED, seed)), leadReason: 'same_day_demanded' };
       }
       // Not a clear answer: ask once, plainly. Reading anything but "yes" as
       // a no booked next-day for a caller asking for same-day (live call).
       if (cls.yesNo !== 'no' && !d.nudgeReasked) {
         d.nudgeReasked = true;
-        return say(ctx, 'confirm', T.pick(T.NUDGE_REASK, seed));
+        return say(ctx, 'confirm', T.pick(ctx.L.NUDGE_REASK, seed));
       }
       d.sameDayNudgeDeclined = true; // never raise it again
       return readBack(ctx);
@@ -363,17 +379,14 @@ async function turn(
     case 'confirm_booking': {
       // A change in the same breath — "no, make it Saturday" — goes straight
       // through the same checks as the first time.
-      if (cls.day && cls.day !== d.bookingDate) {
-        if (cls.dropSlot) d.dropSlot = cls.dropSlot;
-        return considerDay(ctx, cls.day);
-      }
+      if (cls.day && cls.day !== d.bookingDate) return considerDay(ctx, cls.day, undefined, cls.dropSlot);
       if (cls.dropSlot && cls.dropSlot !== d.dropSlot) return chooseSlot(ctx, cls.dropSlot);
       if (cls.yesNo === 'yes') return book(ctx);
-      if (cls.yesNo === 'no') return say(ctx, 'day', T.pick(T.READBACK_CHANGE, seed));
+      if (cls.yesNo === 'no') return say(ctx, 'day', T.pick(ctx.L.READBACK_CHANGE, seed));
       const p = registerPushback(d.pushback);
       d.pushback = p.count;
-      if (p.exhausted) return routeOut(ctx, 'another_problem', T.pick(T.EXIT.another_problem, seed));
-      return say(ctx, 'confirm_booking', T.pick(T.READBACK_REASK, seed));
+      if (p.exhausted) return routeOut(ctx, 'another_problem', T.pick(ctx.L.EXIT.another_problem, seed));
+      return say(ctx, 'confirm_booking', T.pick(ctx.L.READBACK_REASK, seed));
     }
 
     case 'wrap_up': {
@@ -381,7 +394,7 @@ async function turn(
       const booked = Boolean(d.bookingReference);
       const words = utterance.trim().split(/\s+/).filter(Boolean).length;
       // Another car is its own call (D12): the team has it.
-      if (cls.otherVehicle) return say(ctx, 'wrap_up', T.pick(T.WRAP_FOR_THE_TEAM, seed));
+      if (cls.otherVehicle) return say(ctx, 'wrap_up', T.pick(ctx.L.WRAP_FOR_THE_TEAM, seed));
       const restates = cls.intent === 'book' || Boolean(cls.day) || Boolean(cls.dropSlot);
       // Said again, or something to add: the booking is done, so say so, and
       // the extra goes on the job card ("…with pickup at my home").
@@ -389,33 +402,33 @@ async function turn(
         const parts: string[] = [];
         if (restates) {
           parts.push(
-            T.fill(T.pick(T.ALL_SET, seed), { day: T.spokenDay(d.bookingDate!), time: T.spokenDropTime(d.dropSlot!) }),
+            T.fill(T.pick(ctx.L.ALL_SET, seed), { day: T.spokenDay(d.bookingDate!), time: ctx.L.time(d.dropSlot!) }),
           );
         }
         if (cls.specialRequest) {
           addToBooking(ctx, `Caller added: ${cls.specialRequest}`);
-          parts.push(T.pick(T.ADDED_TO_BOOKING, seed));
+          parts.push(T.pick(ctx.L.ADDED_TO_BOOKING, seed));
         }
-        parts.push(T.pick(T.ANYTHING_ELSE_AGAIN, seed));
+        parts.push(T.pick(ctx.L.ANYTHING_ELSE_AGAIN, seed));
         return say(ctx, 'wrap_up', parts.join(' '));
       }
       if (cls.yesNo === 'no') return signOff(ctx);
-      if (cls.yesNo === 'yes' && words <= 3) return say(ctx, 'wrap_up', T.pick(T.GO_AHEAD, seed));
+      if (cls.yesNo === 'yes' && words <= 3) return say(ctx, 'wrap_up', T.pick(ctx.L.GO_AHEAD, seed));
       // Something more than a question: another car, a booking we couldn't
       // make. Not for this call (D12); the team has it, and their number.
       if (cls.yesNo === 'yes' || restates || cls.specialRequest || cls.vehicleModel || cls.complaint) {
-        return say(ctx, 'wrap_up', T.pick(T.WRAP_FOR_THE_TEAM, seed));
+        return say(ctx, 'wrap_up', T.pick(ctx.L.WRAP_FOR_THE_TEAM, seed));
       }
       // Not clear: ask once more rather than hang up on a question.
       if (!d.wrapReasked) {
         d.wrapReasked = true;
-        return say(ctx, 'wrap_up', T.pick(T.WRAP_REASK, seed));
+        return say(ctx, 'wrap_up', T.pick(ctx.L.WRAP_REASK, seed));
       }
       return signOff(ctx);
     }
 
     default:
-      return say(ctx, session.state, T.pick(T.OPEN_TURN, seed));
+      return say(ctx, session.state, T.pick(ctx.L.OPEN_TURN, seed));
   }
 }
 
@@ -425,6 +438,8 @@ type Ctx = {
   db: Database;
   deps: CallDeps;
   session: Session;
+  /** The lines in the caller's language (templates.ts EN / HI). */
+  L: T.Pools;
   now: Date;
   seed: number;
   callDate: IsoDate;
@@ -462,30 +477,30 @@ function resumeQuestion(ctx: Ctx): { text: string; digits?: boolean } {
   switch (ctx.session.state) {
     // Not the full greeting — the bot is disclosed once and never again (G3.1).
     case 'greeting':
-      return { text: T.fill(T.RESUME_CALLER_ID, { last4: T.spokenDigits(d.callerNumber.slice(-4)) }) };
+      return { text: T.fill(T.pick(ctx.L.RESUME_CALLER_ID, seed), { last4: T.spokenDigits(d.callerNumber.slice(-4)) }) };
     case 'awaiting_number':
-      return { text: T.pick(T.ASK_REGISTERED_NUMBER, seed), digits: true };
+      return { text: T.pick(ctx.L.ASK_REGISTERED_NUMBER, seed), digits: true };
     // Re-prompt only; a fresh code would invalidate the one they are holding.
     case 'awaiting_otp':
-      return { text: T.pick(T.ASK_OTP, seed), digits: true };
+      return { text: T.pick(ctx.L.ASK_OTP, seed), digits: true };
     case 'vehicle':
-      return { text: T.pick(d.vehicleListed ? T.VEHICLE_LIST.reask : T.VEHICLE_ASK.reask, seed) };
+      return { text: T.pick(d.vehicleListed ? ctx.L.VEHICLE_LIST.reask : ctx.L.VEHICLE_ASK.reask, seed) };
     case 'complaint':
-      return { text: T.pick(T.ASK_COMPLAINT.reask, seed) };
+      return { text: T.pick(ctx.L.ASK_COMPLAINT.reask, seed) };
     case 'special_request':
-      return { text: T.pick(T.ASK_SPECIAL_REQUEST, seed) };
+      return { text: T.pick(ctx.L.ASK_SPECIAL_REQUEST, seed) };
     case 'day':
-      return { text: T.pick(T.ASK_DAY.ask, seed) };
+      return { text: T.pick(ctx.L.ASK_DAY.ask, seed) };
     case 'drop_slot':
       return { text: offerSlotLine(ctx) };
     case 'confirm':
-      return { text: T.pick(T.SAME_DAY_NUDGE, seed) };
+      return { text: T.pick(ctx.L.SAME_DAY_NUDGE, seed) };
     case 'confirm_booking':
-      return { text: T.pick(T.READBACK_REASK, seed) };
+      return { text: T.pick(ctx.L.READBACK_REASK, seed) };
     case 'wrap_up':
-      return { text: T.pick(T.ANYTHING_ELSE_AGAIN, seed) };
+      return { text: T.pick(ctx.L.ANYTHING_ELSE_AGAIN, seed) };
     default:
-      return { text: T.pick(T.OPEN_TURN, seed) };
+      return { text: T.pick(ctx.L.OPEN_TURN, seed) };
   }
 }
 
@@ -600,7 +615,7 @@ function routeOut(ctx: Ctx, reason: LeadReason, reply: string, opts: { end?: boo
   d.leadReason = reason;
   if (opts.end) return endCall(ctx, reply);
   if (ctx.session.state === 'wrap_up') return signOff(ctx, reply);
-  return { ...say(ctx, 'wrap_up', `${reply} ${T.pick(T.ANYTHING_ELSE_AFTER_EXIT, ctx.seed)}`), leadReason: reason };
+  return { ...say(ctx, 'wrap_up', `${reply} ${T.pick(ctx.L.ANYTHING_ELSE_AFTER_EXIT, ctx.seed)}`), leadReason: reason };
 }
 
 /** A follow-up for the right team, with everything the call knows, and the workshop's number by SMS (F1, F2). */
@@ -652,10 +667,10 @@ function signOff(ctx: Ctx, lead = ''): TurnResult {
   const known = name && name !== 'Guest';
   const line =
     d.bookingReference && d.bookingDate && known
-      ? T.fill(T.pick(T.SIGN_OFF.booked, ctx.seed), { name, day: T.spokenDay(d.bookingDate) })
+      ? T.fill(T.pick(ctx.L.SIGN_OFF.booked, ctx.seed), { name, day: T.spokenDay(d.bookingDate) })
       : known
-        ? T.fill(T.pick(T.SIGN_OFF.other, ctx.seed), { name })
-        : T.pick(T.SIGN_OFF.anonymous, ctx.seed);
+        ? T.fill(T.pick(ctx.L.SIGN_OFF.other, ctx.seed), { name })
+        : T.pick(ctx.L.SIGN_OFF.anonymous, ctx.seed);
   return endCall(ctx, `${lead} ${line}`.trim());
 }
 
@@ -664,7 +679,7 @@ async function identify(ctx: Ctx, mobile: string): Promise<TurnResult> {
   const d = ctx.session.data;
   const account = await ctx.deps.crm.findByMobile(mobile);
   if (!account) {
-    return routeOut(ctx, 'number_not_found', T.pick(T.EXIT.number_not_found, ctx.seed));
+    return routeOut(ctx, 'number_not_found', T.pick(ctx.L.EXIT.number_not_found, ctx.seed));
   }
 
   d.customerId = account.customerId;
@@ -675,23 +690,23 @@ async function identify(ctx: Ctx, mobile: string): Promise<TurnResult> {
   // exist, and a model_not_recognised lead would blame the caller for a record
   // that is simply incomplete (D3).
   if (account.vehicles.length === 0) {
-    return routeOut(ctx, 'missing_required_field', T.pick(T.EXIT.missing_required_field, ctx.seed));
+    return routeOut(ctx, 'missing_required_field', T.pick(ctx.L.EXIT.missing_required_field, ctx.seed));
   }
 
   // E2 — one vehicle: state it, don't ask.
   if (account.vehicles.length === 1) {
     const v = account.vehicles[0]!;
     setVehicle(ctx, v.id);
-    const line = T.fill(T.pick(T.VEHICLE_SINGLE, ctx.seed), { model: v.model });
-    return say(ctx, 'open_turn', `${T.pick(T.LOOKUP_ACCOUNT, ctx.seed)} ${line} ${T.pick(T.OPEN_TURN, ctx.seed)}`);
+    const line = T.fill(T.pick(ctx.L.VEHICLE_SINGLE, ctx.seed), { model: v.model });
+    return say(ctx, 'open_turn', `${T.pick(ctx.L.LOOKUP_ACCOUNT, ctx.seed)} ${line} ${T.pick(ctx.L.OPEN_TURN, ctx.seed)}`);
   }
   // Two to five: read them out, numbered, so "two" is an answer.
-  if (account.vehicles.length <= T.LIST_NUMBER.length) {
+  if (account.vehicles.length <= ctx.L.listNumber.length) {
     d.vehicleListed = true;
-    const L = T.VEHICLE_LIST;
+    const L = ctx.L.VEHICLE_LIST;
     const items = account.vehicles.map((v, i) =>
       T.fill(L.item, {
-        number: T.LIST_NUMBER[i]!.charAt(0).toUpperCase() + T.LIST_NUMBER[i]!.slice(1),
+        number: ctx.L.listNumber[i]!,
         model: v.model,
         last4: T.spokenDigits(v.registration.slice(-4)),
       }),
@@ -700,7 +715,7 @@ async function identify(ctx: Ctx, mobile: string): Promise<TurnResult> {
     const pickLine = T.pick(account.vehicles.length === 2 ? L.pickTwo : L.pickMany, ctx.seed);
     return say(ctx, 'vehicle', [intro, ...items, pickLine].join(' '));
   }
-  return say(ctx, 'vehicle', T.pick(T.VEHICLE_ASK.ask, ctx.seed));
+  return say(ctx, 'vehicle', T.pick(ctx.L.VEHICLE_ASK.ask, ctx.seed));
 }
 
 function setVehicle(ctx: Ctx, vehicleId: number): void {
@@ -725,8 +740,8 @@ function resolveVehicle(ctx: Ctx, model?: string, last4?: string, choice?: numbe
   const picked = d.vehicleListed && choice && choice >= 1 && choice <= vehicles.length ? vehicles[choice - 1] : undefined;
   if (picked) {
     setVehicle(ctx, picked.id);
-    const line = T.fill(T.pick(T.VEHICLE_SINGLE, ctx.seed), { model: picked.model });
-    return say(ctx, 'open_turn', `${line} ${T.pick(T.OPEN_TURN, ctx.seed)}`);
+    const line = T.fill(T.pick(ctx.L.VEHICLE_SINGLE, ctx.seed), { model: picked.model });
+    return say(ctx, 'open_turn', `${line} ${T.pick(ctx.L.OPEN_TURN, ctx.seed)}`);
   }
 
   // Nothing to match on at all is a non-answer, not a failed match — narrow
@@ -735,9 +750,9 @@ function resolveVehicle(ctx: Ctx, model?: string, last4?: string, choice?: numbe
     const p = registerPushback(d.pushback);
     d.pushback = p.count;
     if (p.exhausted) {
-      return routeOut(ctx, 'model_not_recognised', T.pick(T.EXIT.model_not_recognised, ctx.seed));
+      return routeOut(ctx, 'model_not_recognised', T.pick(ctx.L.EXIT.model_not_recognised, ctx.seed));
     }
-    return say(ctx, 'vehicle', T.pick(d.vehicleListed ? T.VEHICLE_LIST.reask : T.VEHICLE_ASK.reask, ctx.seed));
+    return say(ctx, 'vehicle', T.pick(d.vehicleListed ? ctx.L.VEHICLE_LIST.reask : ctx.L.VEHICLE_ASK.reask, ctx.seed));
   }
 
   const passes = [
@@ -752,14 +767,14 @@ function resolveVehicle(ctx: Ctx, model?: string, last4?: string, choice?: numbe
   if (!hit && d.vehicleListed && passes[2]!.length > 1) {
     const p = registerPushback(d.pushback);
     d.pushback = p.count;
-    if (!p.exhausted) return say(ctx, 'vehicle', T.pick(T.VEHICLE_LIST.reask, ctx.seed));
+    if (!p.exhausted) return say(ctx, 'vehicle', T.pick(ctx.L.VEHICLE_LIST.reask, ctx.seed));
   }
   if (!hit) {
-    return routeOut(ctx, 'model_not_recognised', T.pick(T.EXIT.model_not_recognised, ctx.seed));
+    return routeOut(ctx, 'model_not_recognised', T.pick(ctx.L.EXIT.model_not_recognised, ctx.seed));
   }
   setVehicle(ctx, hit.id);
-  const line = T.fill(T.pick(T.VEHICLE_SINGLE, ctx.seed), { model: hit.model });
-  return say(ctx, 'open_turn', `${line} ${T.pick(T.OPEN_TURN, ctx.seed)}`);
+  const line = T.fill(T.pick(ctx.L.VEHICLE_SINGLE, ctx.seed), { model: hit.model });
+  return say(ctx, 'open_turn', `${line} ${T.pick(ctx.L.OPEN_TURN, ctx.seed)}`);
 }
 
 /**
@@ -772,36 +787,29 @@ function afterIntent(ctx: Ctx): TurnResult {
 
   const existing = openBookingForRegistration(ctx.db, d.registration!);
   if (existing) {
-    return routeOut(ctx, 'existing_open_booking', T.pick(T.EXIT.existing_open_booking, ctx.seed));
+    return routeOut(ctx, 'existing_open_booking', T.pick(ctx.L.EXIT.existing_open_booking, ctx.seed));
   }
 
   // E5 — the D2/D3 blockers fire here, on the prefetched CRM record.
   const assessment = assessBookability(d.due, ctx.callDate);
   if (!assessment.bookable) {
-    return routeOut(ctx, assessment.reason, T.pick(T.EXIT[assessment.reason], ctx.seed));
+    return routeOut(ctx, assessment.reason, T.pick(ctx.L.EXIT[assessment.reason], ctx.seed));
   }
   // The fault was said up front: it goes on the job card, and we don't ask
   // "is anything wrong?" about the thing they just told us (D8).
   if (d.complaintNote) {
     d.pool = poolFor(assessment.serviceType, true);
-    return askDay(ctx, T.pick(T.ACK_COMPLAINT, ctx.seed));
+    return askDay(ctx, faultAck(ctx), T.pick(ctx.L.FAULT_NEXT_DAY, ctx.seed));
   }
   d.pool = poolFor(assessment.serviceType, false);
 
   const due = d.due!;
-  const stated = T.fill(T.pick(T.SERVICE_DUE, ctx.seed), {
+  const stated = T.fill(T.pick(ctx.L.SERVICE_DUE, ctx.seed), {
     model: d.model!,
-    ordinal: ordinalWord(due.service_number),
+    ordinal: ctx.L.ordinal(due.service_number),
     pool: assessment.serviceType,
   });
-  return say(ctx, 'complaint', `${stated} ${T.pick(T.ASK_COMPLAINT.ask, ctx.seed)}`);
-}
-
-function ordinalWord(n: number): string {
-  return (
-    ['zeroth', 'first', 'second', 'third', 'fourth', 'fifth', 'sixth', 'seventh', 'eighth', 'ninth'][n] ??
-    `${n}th`
-  );
+  return say(ctx, 'complaint', `${stated} ${T.pick(ctx.L.ASK_COMPLAINT.ask, ctx.seed)}`);
 }
 
 function windowAndDays(ctx: Ctx) {
@@ -815,12 +823,91 @@ function windowAndDays(ctx: Ctx) {
 }
 
 /** E7 — if the open turn already settled the day, use it rather than re-asking. */
-function askDay(ctx: Ctx, ack?: string): TurnResult {
+function askDay(ctx: Ctx, ack?: string, consequence?: string): TurnResult {
   const d = ctx.session.data;
   const lead = ack ? `${ack} ` : '';
-  if (d.bookingDate) return considerDay(ctx, d.bookingDate, lead);
+  // The slot line says when it's back, so the consequence is only said here,
+  // where the next question is the day.
+  if (d.bookingDate) return considerDay(ctx, d.bookingDate, lead, d.dropSlot);
   if (d.noDayPreference) return offerFirstAvailable(ctx, lead);
-  return say(ctx, 'day', `${lead}${T.pick(T.ASK_DAY.ask, ctx.seed)}`);
+  return say(ctx, 'day', `${lead}${consequence ? `${consequence} ` : ''}${T.pick(ctx.L.ASK_DAY.ask, ctx.seed)}`);
+}
+
+/** The fault on the session: its area (a closed list), and the caller's words for the job card. */
+function noteFault(ctx: Ctx, cls: Classification): void {
+  const d = ctx.session.data;
+  d.faultArea = cls.faultArea ?? 'other';
+  d.complaintNote = d.faultArea !== 'other' ? `[${d.faultArea}] ${cls.complaint}` : cls.complaint;
+}
+
+/** "Got it, a problem with the gears, noted for the workshop." — the area in our words (B3). */
+function faultAck(ctx: Ctx): string {
+  const area = ctx.session.data.faultArea;
+  return area && area !== 'other'
+    ? T.fill(T.pick(ctx.L.ACK_FAULT, ctx.seed), { fault: ctx.L.fault[area] })
+    : T.pick(ctx.L.ACK_COMPLAINT, ctx.seed);
+}
+
+/**
+ * "Why is it next day?", "When do I get it back?" — answered from this call's
+ * own booking state, in the caller's language. A question asked before it
+ * applies (no day yet) gets the general answer.
+ */
+function explain(ctx: Ctx, topic: ExplainTopic): string {
+  const d = ctx.session.data;
+  const E = ctx.L.EXPLAIN;
+  const say = (pool: string[], vars: Record<string, string> = {}) => T.fill(T.pick(pool, ctx.seed), vars);
+  const pool = d.pool;
+  const slot = d.dropSlot;
+  const day = d.bookingDate ? T.spokenDay(d.bookingDate) : undefined;
+  const back = pool && slot ? (isSameDay(pool, slot) ? ctx.L.back.same : ctx.L.back.next) : undefined;
+  switch (topic) {
+    case 'next_day':
+      if (pool === 'complaint') {
+        return say(E.next_day_fault, {
+          pool: d.due?.service_type ?? 'regular',
+          problem: ctx.L.problem[d.faultArea ?? 'other'],
+        });
+      }
+      if (pool === 'major' && slot === 'afternoon') return say(E.next_day_major);
+      if (pool && slot && isSameDay(pool, slot)) return say(E.not_next_day);
+      return say(E.next_day_general);
+    case 'same_day_how':
+      if (pool === 'complaint') return say(E.same_day_fault);
+      if (pool === 'minor') return say(E.same_day_minor);
+      if (pool === 'major') return say(E.same_day_major);
+      return say(E.same_day_general);
+    case 'not_today':
+      return say(E.not_today);
+    case 'day_full':
+      return d.lastFullDay ? say(E.day_full, { day: T.spokenDay(d.lastFullDay) }) : say(E.day_full_general);
+    case 'one_slot': {
+      const offer = d.bookingDate && pool ? slotOffer(ctx) : undefined;
+      if (day && (offer === 'morning' || offer === 'afternoon')) {
+        return say(E.one_slot, { day, other: ctx.L.slot[offer === 'morning' ? 'afternoon' : 'morning'] });
+      }
+      return say(E.one_slot_general);
+    }
+    case 'ready_when':
+      return day && slot && back ? say(E.ready_when, { day, time: ctx.L.time(slot), back }) : say(E.ready_when_general);
+    case 'drop_off':
+      return slot ? say(E.drop_off, { time: ctx.L.time(slot) }) : say(E.drop_off_general);
+    default:
+      return say(E[topic]);
+  }
+}
+
+/**
+ * "Can someone call me back?" — a plain yes. One customer-care follow-up for
+ * the call (a second ask joins it), the workshop's number by SMS. Mid-booking
+ * the booking carries on; otherwise the call moves to "Anything else?".
+ */
+function callBack(ctx: Ctx, words: string): TurnResult {
+  passOn(ctx, `Asked for a call back: ${words.trim()}`);
+  const yes = T.pick(ctx.L.CALLBACK_YES, ctx.seed);
+  const booking = ['vehicle', 'complaint', 'special_request', 'day', 'drop_slot', 'confirm', 'confirm_booking'];
+  if (booking.includes(ctx.session.state) || ctx.session.state === 'wrap_up') return answerAndResume(ctx, yes);
+  return say(ctx, 'wrap_up', `${yes} ${T.pick(ctx.L.ANYTHING_ELSE_AFTER_EXIT, ctx.seed)}`);
 }
 
 /**
@@ -836,31 +923,35 @@ function offerFirstAvailable(ctx: Ctx, lead = ''): TurnResult {
     return routeOut(
       ctx,
       'nothing_available_30_days',
-      T.pick(T.EXIT.nothing_available_30_days, ctx.seed),
+      T.pick(ctx.L.EXIT.nothing_available_30_days, ctx.seed),
     );
   }
-  const named = T.fill(T.pick(T.FIRST_AVAILABLE, ctx.seed), { date: T.spokenDate(first.date) });
+  const named = T.fill(T.pick(ctx.L.FIRST_AVAILABLE, ctx.seed), { date: ctx.L.date(first.date) });
   return considerDay(ctx, first.date, `${lead}${named} `);
 }
 
 /** D5 and D6 together: is this day in the window, and can it take the job? */
-function considerDay(ctx: Ctx, requested: IsoDate, given?: string): TurnResult {
+function considerDay(ctx: Ctx, requested: IsoDate, given?: string, wanted?: DropSlot): TurnResult {
   const d = ctx.session.data;
   // A lead-in while the day is checked — unless the turn already has one
   // (an acknowledgement, or "the soonest is…"). Never two.
-  const lead = given ?? `${T.pick(T.LOOKUP_DAY, ctx.seed)} `;
+  const lead = given ?? `${T.pick(ctx.L.LOOKUP_DAY, ctx.seed)} `;
   const { w, days } = windowAndDays(ctx);
   const offer = offerForDate(days, requested, d.pool!, w);
 
   if (offer && offer !== 'none') {
     d.bookingDate = requested;
+    // The caller already said which slot, and it's free: don't offer both
+    // again — go to the readback ("kal subah" was answered with a choice).
+    if (wanted && (offer === 'both' || offer === wanted)) return chooseSlot(ctx, wanted, lead);
+    d.dropSlot = undefined;
     return say(ctx, 'drop_slot', `${lead}${offerSlotLine(ctx, offer)}`);
   }
 
   // Nothing at all in the whole window is the loudest alarm in the system (F3).
   const bookable = findBookable(days, d.pool!, w);
   if (bookable.length === 0) {
-    return routeOut(ctx, 'nothing_available_30_days', T.pick(T.EXIT.nothing_available_30_days, ctx.seed));
+    return routeOut(ctx, 'nothing_available_30_days', T.pick(ctx.L.EXIT.nothing_available_30_days, ctx.seed));
   }
 
   // D11 — forcing a full day more than three times routes out.
@@ -868,23 +959,24 @@ function considerDay(ctx: Ctx, requested: IsoDate, given?: string): TurnResult {
   d.pushback = p.count;
   if (p.exhausted) {
     d.bookingDate = requested;
-    return routeOut(ctx, 'forced_full_day', T.pick(T.EXIT.forced_full_day, ctx.seed));
+    return routeOut(ctx, 'forced_full_day', T.pick(ctx.L.EXIT.forced_full_day, ctx.seed));
   }
 
   // D6 — offer the next two available days, naming the slot where only one is
   // open. Two, never a list: E0 allows at most two options a turn.
+  d.lastFullDay = requested;
   const alts = nextTwoAvailable(days, d.pool!, w, requested);
   const label = (a: { date: IsoDate; offer: string }) =>
-    a.offer === 'both' ? T.spokenDate(a.date) : `${T.spokenDate(a.date)} ${a.offer}`;
+    a.offer === 'both' ? ctx.L.date(a.date) : `${ctx.L.date(a.date)} ${ctx.L.slot[a.offer as DropSlot]}`;
 
   const reply =
     alts.length >= 2
-      ? T.fill(T.pick(T.DAY_FULL_OFFER_TWO, ctx.seed), {
+      ? T.fill(T.pick(ctx.L.DAY_FULL_OFFER_TWO, ctx.seed), {
           day: T.spokenDay(requested),
           alt1: label(alts[0]!),
           alt2: label(alts[1]!),
         })
-      : T.fill(T.pick(T.DAY_FULL_OFFER_ONE, ctx.seed), {
+      : T.fill(T.pick(ctx.L.DAY_FULL_OFFER_ONE, ctx.seed), {
           day: T.spokenDay(requested),
           alt1: label(alts[0]!),
         });
@@ -909,11 +1001,11 @@ function offerSlotLine(ctx: Ctx, known?: DayOffer): string {
     // Only one slot free: state it (D6), don't ask a question with one answer.
     // Parked on the session so a bare "yes" in `drop_slot` can accept it.
     d.dropSlot = offer;
-    return T.fill(T.pick(T.DAY_ONE_SLOT, ctx.seed), { day, slot: offer });
+    return T.fill(T.pick(ctx.L.DAY_ONE_SLOT, ctx.seed), { day, slot: ctx.L.slot[offer] });
   }
   const am = isSameDay(d.pool!, 'morning');
   const pm = isSameDay(d.pool!, 'afternoon');
-  const pool = am && pm ? T.SLOT_BOTH_SAME_DAY : !am && !pm ? T.SLOT_BOTH_NEXT_DAY : T.SLOT_BOTH;
+  const pool = am && pm ? ctx.L.SLOT_BOTH_SAME_DAY : !am && !pm ? ctx.L.SLOT_BOTH_NEXT_DAY : ctx.L.SLOT_BOTH;
   return T.fill(T.pick(pool, ctx.seed), { day });
 }
 
@@ -922,8 +1014,8 @@ function reaskSlotLine(ctx: Ctx): string {
   const offer = slotOffer(ctx);
   const day = T.spokenDay(ctx.session.data.bookingDate!);
   return offer === 'morning' || offer === 'afternoon'
-    ? T.fill(T.pick(T.SLOT_REASK_ONE, ctx.seed), { day, slot: offer })
-    : T.fill(T.pick(T.SLOT_REASK_BOTH, ctx.seed), { day });
+    ? T.fill(T.pick(ctx.L.SLOT_REASK_ONE, ctx.seed), { day, slot: ctx.L.slot[offer] })
+    : T.fill(T.pick(ctx.L.SLOT_REASK_BOTH, ctx.seed), { day });
 }
 
 /**
@@ -932,33 +1024,37 @@ function reaskSlotLine(ctx: Ctx): string {
  * accepting, or the booking fails at the write and a caller who could have
  * been booked gets routed out instead.
  */
-function chooseSlot(ctx: Ctx, chosen: DropSlot): TurnResult {
+function chooseSlot(ctx: Ctx, chosen: DropSlot, lead = ''): TurnResult {
   const d = ctx.session.data;
   const { days } = windowAndDays(ctx);
   const day = days.find((x) => x.date === d.bookingDate);
   if (!day || !canTake(day, d.pool!, chosen)) {
     const p = registerPushback(d.pushback);
     d.pushback = p.count;
-    if (p.exhausted) return routeOut(ctx, 'forced_full_day', T.pick(T.EXIT.forced_full_day, ctx.seed));
+    if (p.exhausted) return routeOut(ctx, 'forced_full_day', T.pick(ctx.L.EXIT.forced_full_day, ctx.seed));
     const left = day ? dayOffer(day, d.pool!) : 'none';
     if (left === 'none') return considerDay(ctx, d.bookingDate!);
     return say(
       ctx,
       'drop_slot',
-      T.fill(T.pick(T.SLOT_GONE, ctx.seed), { asked: chosen, left, day: T.spokenDay(d.bookingDate!) }),
+      T.fill(T.pick(ctx.L.SLOT_GONE, ctx.seed), {
+        asked: ctx.L.slot[chosen],
+        left: ctx.L.slot[left as DropSlot],
+        day: T.spokenDay(d.bookingDate!),
+      }),
     );
   }
   d.dropSlot = chosen;
-  return maybeNudgeThenReadBack(ctx);
+  return maybeNudgeThenReadBack(ctx, lead);
 }
 
 /** D7 — offer the same-day nudge once, where delivery lands on the next day. */
-function maybeNudgeThenReadBack(ctx: Ctx): TurnResult {
+function maybeNudgeThenReadBack(ctx: Ctx, lead = ''): TurnResult {
   const d = ctx.session.data;
   if (!d.sameDayNudgeDeclined && shouldOfferSameDayNudge(d.pool!, d.dropSlot!)) {
-    return say(ctx, 'confirm', T.pick(T.SAME_DAY_NUDGE, ctx.seed));
+    return say(ctx, 'confirm', `${lead}${T.pick(ctx.L.SAME_DAY_NUDGE, ctx.seed)}`);
   }
-  return readBack(ctx);
+  return readBack(ctx, lead.trim());
 }
 
 /** Say what will be booked, and wait for a yes. Nothing is written yet. */
@@ -968,10 +1064,10 @@ function readBack(ctx: Ctx, lead = ''): TurnResult {
     ctx,
     'confirm_booking',
     (lead ? `${lead} ` : '') +
-    T.fill(T.pick(T.READBACK, ctx.seed), {
-      date: T.spokenDate(d.bookingDate!),
-      time: T.spokenDropTime(d.dropSlot!),
-      back: isSameDay(d.pool!, d.dropSlot!) ? 'the same evening' : 'the next day',
+    T.fill(T.pick(ctx.L.READBACK, ctx.seed), {
+      date: ctx.L.date(d.bookingDate!),
+      time: ctx.L.time(d.dropSlot!),
+      back: isSameDay(d.pool!, d.dropSlot!) ? ctx.L.back.same : ctx.L.back.next,
     }),
   );
 }
@@ -997,10 +1093,10 @@ function book(ctx: Ctx): TurnResult {
     // The cheap safety net: another channel took the slot, or the vehicle, mid
     // conversation. Both are real outcomes, not faults.
     if (e instanceof SlotFullError) {
-      return routeOut(ctx, 'forced_full_day', T.pick(T.EXIT.forced_full_day, ctx.seed));
+      return routeOut(ctx, 'forced_full_day', T.pick(ctx.L.EXIT.forced_full_day, ctx.seed));
     }
     if (e instanceof DuplicateBookingError) {
-      return routeOut(ctx, 'existing_open_booking', T.pick(T.EXIT.existing_open_booking, ctx.seed));
+      return routeOut(ctx, 'existing_open_booking', T.pick(ctx.L.EXIT.existing_open_booking, ctx.seed));
     }
     throw e;
   }
@@ -1018,7 +1114,7 @@ function book(ctx: Ctx): TurnResult {
   });
   d.bookingReference = created.reference;
 
-  let reply = T.pick(T.BOOKED, ctx.seed);
+  let reply = T.pick(ctx.L.BOOKED, ctx.seed);
 
   // D12 — mention a second due vehicle. Mention only; it needs its own call.
   const others = otherDueVehicles(
@@ -1032,11 +1128,11 @@ function book(ctx: Ctx): TurnResult {
     ctx.callDate,
   );
   if (others.length > 0) {
-    reply += ` ${T.fill(T.pick(T.SECOND_VEHICLE, ctx.seed), { model: others[0]!.model })}`;
+    reply += ` ${T.fill(T.pick(ctx.L.SECOND_VEHICLE, ctx.seed), { model: others[0]!.model })}`;
   }
 
   // Not goodbye yet: the caller may have something else (wrap_up).
-  reply += ` ${T.pick(T.ANYTHING_ELSE, ctx.seed)}`;
+  reply += ` ${T.pick(ctx.L.ANYTHING_ELSE, ctx.seed)}`;
   return { ...say(ctx, 'wrap_up', reply), bookingReference: created.reference };
 }
 

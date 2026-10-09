@@ -907,7 +907,7 @@ describe('sounding like a person at a desk', () => {
   const sentencesOf = (text: string) => text.split(/(?<=[.?!])\s+/).filter(Boolean);
   /** A spoken list item — "Two, the i20 ending 4 0 0 4." — counts with its list, not alone. */
   const listItem = (s: string) => /^(One|Two|Three|Four|Five), the /.test(s);
-  const LEAD_INS = [...T.LOOKUP_ACCOUNT, ...T.LOOKUP_DAY];
+  const LEAD_INS = [...T.EN.LOOKUP_ACCOUNT, ...T.EN.LOOKUP_DAY];
 
   const calls: Array<[string, string, string[]]> = [
     ['a booking', '9810011001', ['Yes.', 'Nexon service Friday.', 'No.', 'No.', 'Morning.', 'Yes.', 'No thanks.']],
@@ -941,8 +941,8 @@ describe('sounding like a person at a desk', () => {
 
   it('says it is looking things up while it does', async () => {
     const turns = await call('9810011001', ['Yes.', 'Nexon service.', 'No.', 'No.', 'Friday.']);
-    expect(T.LOOKUP_ACCOUNT.some((l) => turns[1]!.reply.startsWith(l))).toBe(true);
-    expect(T.LOOKUP_DAY.some((l) => turns.at(-1)!.reply.startsWith(l))).toBe(true);
+    expect(T.EN.LOOKUP_ACCOUNT.some((l) => turns[1]!.reply.startsWith(l))).toBe(true);
+    expect(T.EN.LOOKUP_DAY.some((l) => turns.at(-1)!.reply.startsWith(l))).toBe(true);
   });
 });
 
@@ -1013,5 +1013,183 @@ describe('the live calls of 2026-10-04, 15:08 and 15:18', () => {
     expect(turns.at(-2)!.reply).toMatch(/^Sorry/);
     expect(turns.at(-2)!.ended).toBe(false);
     expect(turns.at(-1)!.ended).toBe(true);
+  });
+});
+
+describe('Hinglish: understood, and answered in kind', () => {
+  const sessionData = (id: string) =>
+    JSON.parse((db.prepare(`SELECT data FROM sessions WHERE id = ?`).get(id) as { data: string }).data) as Record<string, unknown>;
+
+  it('books a whole Hinglish call, replying in Hinglish', async () => {
+    const turns = await call('9810022002', [
+      'Haan ji', 'doosri wali', 'service karwana hai', 'gear mein problem hai', 'kal subah', 'nahi', 'haan, book kar do', 'bas, shukriya',
+    ]);
+    const replies = turns.map((t) => t.reply);
+    // The greeting is English: we don't know the caller yet.
+    expect(replies[0]).toMatch(/automated booking assistant/);
+    expect(replies[1]).toMatch(/gaadiyan/);
+    expect(replies[2]).toMatch(/Creta/);
+    expect(replies[4]).toMatch(/gear mein problem hai/);
+    expect(said(turns)).toMatch(/Book kar dein\?/);
+    const booked = turns.find((t) => t.bookingReference)!;
+    expect(booked.reply).toMatch(/booking pakki|Booking ho gayi|Book kar diya/);
+    expect(turns.at(-1)!.ended).toBe(true);
+    expect(turns.at(-1)!.reply).toMatch(/milte hain|shukriya/i);
+    expect(sessionData(turns[0]!.sessionId)['language']).toBe('hinglish');
+  });
+
+  it('switches back to English after two plain-English turns', async () => {
+    const turns = await call('9810011001', ['Haan ji', 'I want to book a service', 'Nothing is wrong with it', 'No.']);
+    expect(turns[1]!.reply).toMatch(/Kaise help|kya madad|Aaj kya kaam/);
+    expect(turns.at(-1)!.reply).toMatch(/day|bring it in/i);
+    expect(sessionData(turns[0]!.sessionId)['language']).toBe('english');
+  });
+
+  it('reads Hinglish and Devanagari yes, no, days, slots, picks and goodbyes', async () => {
+    const s = new StubClassifier();
+    const two = [{ model: 'Swift', last4: '2213' }, { model: 'Creta', last4: '5567' }];
+    const read = (state: string, utterance: string) => s.classify({ state: state as never, utterance, today: TODAY, vehicles: two });
+    expect((await read('greeting', 'haan ji')).yesNo).toBe('yes');
+    expect((await read('greeting', 'जी हाँ')).yesNo).toBe('yes');
+    expect((await read('confirm_booking', 'nahi')).yesNo).toBe('no');
+    expect((await read('confirm', 'bas, shukriya')).yesNo).toBe('no');
+    expect((await read('vehicle', 'doosri wali')).vehicleChoice).toBe(2);
+    expect((await read('vehicle', 'pehli')).vehicleChoice).toBe(1);
+    expect((await read('day', 'kal subah'))).toMatchObject({ day: addDays(TODAY, 1), dropSlot: 'morning' });
+    expect((await read('day', 'parson dopahar'))).toMatchObject({ day: addDays(TODAY, 2), dropSlot: 'afternoon' });
+    expect((await read('day', 'shukravaar ko')).day).toBe(addDays(TODAY, 4));
+    expect((await read('wrap_up', 'theek hai, shukriya')).yesNo).toBe('no');
+    expect((await read('complaint', 'gaadi se awaaz aa rahi hai'))).toMatchObject({ faultArea: 'noise' });
+    expect((await read('greeting', 'Yes.')).language).toBe('english');
+    expect((await read('greeting', 'मुझे सर्विस करवानी है')).language).toBe('hinglish');
+  });
+});
+
+describe('a long fault description is understood, and said back in our words', () => {
+  // The user's own words (2026-10-09).
+  const KNOB =
+    'Basically, I am facing a problem with a gear knob. Whenever I shift the gear, I can see the the light pulling of the gear changing wires. You can see the tuning fork or the pointing fork of the gear.';
+
+  it('names the area, says what it means, and asks only for the day', async () => {
+    const turns = await call('9810011001', ['Yes.', KNOB]);
+    const reply = turns.at(-1)!.reply;
+    expect(reply).toMatch(/a problem with the gears/);
+    expect(reply).toMatch(/next day/);
+    expect(reply).not.toMatch(/playing up|anything wrong|soonest|first I can do/i);
+    expect(turns.at(-1)!.state).toBe('day');
+  });
+
+  it('puts the area and the caller’s words on the job card', async () => {
+    const turns = await call('9810011001', ['Yes.', KNOB, 'Friday morning.', 'No.', 'Yes.']);
+    const ref = turns.find((t) => t.bookingReference)!.bookingReference!;
+    const note = (db.prepare(`SELECT complaint_note n, service_type p FROM bookings WHERE booking_reference = ?`).get(ref) as { n: string; p: string });
+    expect(note.n).toMatch(/^\[gears\] Basically, I am facing a problem with a gear knob/);
+    expect(note.p).toBe('complaint');
+  });
+
+  it('takes the slot said with the day, rather than offering both again', async () => {
+    const turns = await call('9810011001', ['Yes.', 'Nexon service.', 'No.', 'No.', 'Friday morning.']);
+    expect(turns.at(-1)!.state).toBe('confirm_booking');
+    expect(turns.at(-1)!.reply).toMatch(/8:30/);
+  });
+});
+
+describe('explaining itself: "why…?" and "what happens…?"', () => {
+  const ask = async (lines: string[], question: string) => {
+    const turns = await call('9810011001', [...lines, question]);
+    return { before: turns.at(-2)!, after: turns.at(-1)! };
+  };
+  const GEARS = ['Yes.', 'I have a problem with the gears.'];
+
+  it('why next day: the fault needs a proper check', async () => {
+    const { before, after } = await ask([...GEARS, 'Friday.'], 'Why is it next day, why not the same day?');
+    expect(after.reply).toMatch(/major service, but the gear problem needs a proper check/);
+    expect(after.state).toBe(before.state); // and the call carries on where it was
+  });
+
+  it('why next day: a major service dropped at 2', async () => {
+    const turns = await call('9810055005', ['Yes.', 'Fortuner service.', 'No.', 'No.', 'Friday.', 'Afternoon.', 'Why is it next day?']);
+    expect(turns.at(-1)!.reply).toMatch(/major service takes most of a day/);
+  });
+
+  it('why next day: it isn’t', async () => {
+    const { after } = await ask(['Yes.', 'Nexon service.', 'No.', 'No.', 'Friday morning.'], 'Why is it next day?');
+    expect(after.reply).toMatch(/back the same evening/);
+    expect(after.state).toBe('confirm_booking');
+  });
+
+  it('why next day, asked before any day: the general answer', async () => {
+    const { after } = await ask(['Yes.'], 'Why are some services next day?');
+    expect(after.reply).toMatch(/Repairs and afternoon major services run overnight/);
+  });
+
+  it('why is that day full', async () => {
+    const { after } = await ask(['Yes.', 'Nexon service on Thursday.', 'No.', 'No.'], 'Why is it full?');
+    expect(after.reply).toMatch(/places for that job on Thursday are taken/);
+  });
+
+  it('why only the afternoon', async () => {
+    const turns = await call('9810044004', ['Yes.', 'Book the i20 in on Friday.', 'No.', 'No.', 'Why only afternoon?']);
+    expect(turns.at(-1)!.reply).toMatch(/morning is already full on Friday/);
+  });
+
+  it('when will I get it back, once a slot is chosen', async () => {
+    const { after } = await ask([...GEARS, 'Friday morning.'], 'When will I get it back?');
+    expect(after.reply).toMatch(/Drop it at 8:30 on Friday\. It's back the next day\./);
+  });
+
+  for (const [question, answer] of [
+    ['Why not today?', /book from tomorrow/],
+    ['What do I do when I come?', /drop it at reception/i],
+    ['Will I get a confirmation?', /text with the reference/],
+    ['Can I change it later?', /call the workshop on the number in the text/],
+    ['Why do you need my number?', /only the car's owner/],
+    ['Why do you ask what is wrong?', /knows what to check/],
+  ] as const) {
+    it(`${question}`, async () => {
+      const { before, after } = await ask(['Yes.', 'Nexon service.'], question);
+      expect(after.reply).toMatch(answer);
+      expect(after.state).toBe(before.state);
+    });
+  }
+});
+
+describe('"can someone call me back?" gets a plain yes', () => {
+  const leads = () => db.prepare(`SELECT caller_words FROM leads ORDER BY id`).all() as { caller_words: string }[];
+
+  it('mid-booking: yes, a follow-up, the number texted, and the booking carries on', async () => {
+    const before = leads().length;
+    const turns = await call('9810055005', ['Yes.', 'Fortuner service.', 'Can someone from the service centre call me back?']);
+    const last = turns.at(-1)!;
+    expect(last.reply).toMatch(/call you/);
+    expect(last.reply).toMatch(/texting you their number/);
+    expect(last.state).toBe('complaint');
+    const added = leads().slice(before);
+    expect(added).toHaveLength(1);
+    expect(added[0]!.caller_words).toMatch(/Asked for a call back: Can someone from the service centre call me back\?/);
+    const sms = db.prepare(`SELECT body FROM sms_log ORDER BY id DESC LIMIT 1`).get() as { body: string };
+    expect(sms.body).toContain('01244567890');
+  });
+
+  it('a second ask joins the same follow-up', async () => {
+    const before = leads().length;
+    await call('9810055005', ['Yes.', 'Fortuner service.', 'Can someone call me back?', 'I want to talk to a person.']);
+    expect(leads().length - before).toBe(1);
+  });
+
+  it('before booking anything: yes, then "Anything else?"', async () => {
+    const turns = await call('9810011001', ['Yes.', 'I want to talk to the manager.']);
+    expect(turns.at(-1)!.state).toBe('wrap_up');
+    expect(turns.at(-1)!.reply).toMatch(/call you.*Anything else|Anything else/s);
+  });
+
+  it('in Hinglish too', async () => {
+    const turns = await call('9810011001', ['Haan ji', 'Mujhe call karwa dijiye']);
+    expect(turns.at(-1)!.reply).toMatch(/call karwa dete hain|aapko call karenge/);
+  });
+
+  it('"I\'ll call back later" is not a request', async () => {
+    const turns = await call('9810011001', ['Yes.', "I'll call back later."]);
+    expect(turns.at(-1)!.reply).not.toMatch(/texting you their number/);
   });
 });

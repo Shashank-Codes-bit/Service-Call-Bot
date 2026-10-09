@@ -23,6 +23,31 @@ const CALL_STATES = [
 ] as const;
 export type CallState = (typeof CALL_STATES)[number];
 
+/** The language the agent replies in: it follows the caller (templates.ts EN / HI). */
+export type Language = 'english' | 'hinglish';
+
+/**
+ * Where a reported fault is, from a closed list: the model picks one, our code
+ * says the sentence ("Got it, a problem with the gears."), so no model-written
+ * words are ever spoken (B3).
+ */
+export const FAULT_AREAS = [
+  'gears', 'clutch', 'brakes', 'engine', 'ac', 'battery', 'steering', 'suspension',
+  'noise', 'warning_light', 'electrics', 'tyres', 'body', 'other',
+] as const;
+export type FaultArea = (typeof FAULT_AREAS)[number];
+
+/**
+ * "Why is it next day?", "When do I get it back?" — questions about how the
+ * booking works, answered by our code from the call's own state (templates.ts
+ * EXPLAIN), never by the knowledge bank and never by a model.
+ */
+export const EXPLAIN_TOPICS = [
+  'next_day', 'same_day_how', 'not_today', 'day_full', 'one_slot', 'ready_when',
+  'drop_off', 'confirmation', 'change_later', 'why_number', 'why_fault',
+] as const;
+export type ExplainTopic = (typeof EXPLAIN_TOPICS)[number];
+
 export type KnownVehicle = {
   id: number;
   registration: string;
@@ -98,6 +123,14 @@ export type SessionData = {
   /** Vapi's end-of-call report: why the line closed, and how long it was open. */
   endedReason?: string;
   durationSeconds?: number;
+  /** The language replies are in, following the caller; English until they speak Hinglish. */
+  language?: Language;
+  /** Plain-English caller turns in a row; two switch a Hinglish call back to English. */
+  englishTurns?: number;
+  /** The last day we said was full, for "why is it full?". */
+  lastFullDay?: IsoDate;
+  /** Where the reported fault is, when the caller said (FAULT_AREAS). */
+  faultArea?: FaultArea;
   /** Set when the call ended by routing out. */
   leadReason?: LeadReason;
   bookingReference?: string;

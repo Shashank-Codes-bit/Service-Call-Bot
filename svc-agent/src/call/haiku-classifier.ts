@@ -5,7 +5,7 @@ import { config } from '../config.ts';
 import { addDays, weekdayOf, WEEKDAY_NAMES as WEEKDAY, type IsoDate } from '../shared/dates.ts';
 import type { DropSlot } from '../shared/types.ts';
 import { redactUtterance, type Classification, type ClassifyRequest, type Classifier } from './classifier.ts';
-import type { CallState } from './types.ts';
+import { EXPLAIN_TOPICS, FAULT_AREAS, type CallState } from './types.ts';
 
 /**
  * The only place the LLM is touched (F5). It answers what the caller said,
@@ -32,7 +32,11 @@ Rules:
 - A question about the centre itself rather than about the caller's car or booking is out_of_band "general". Judge this by what is being asked about — the premises, the services offered, how things work there — NOT by whether it appears in the topic list. The topic list says only which questions this centre has published an answer to; a question outside it is still a general question, and you must then set kb_key to "none".
 - escalation is true only for something the workshop must handle as an incident: the car will not start, a breakdown, an accident, needing recovery, or a serious grievance. A routine fault to be fixed at the service is NOT an escalation, it is a complaint.
 - A complaint is something wrong with the car. A special request is something the caller wants done while it is in (a wash, an interior clean). Distinguish them.
-- Indian English is the norm. Callers are brief and often answer several questions at once.`;
+- Indian English is the norm. Callers are brief and often answer several questions at once.
+- Callers often speak Hindi or Hinglish (Hindi and English mixed), in Latin or Devanagari script. Read the meaning the same way, and set language to "hinglish" whenever they use Hindi words. Common forms: yes = haan, haan ji, ji, theek hai, bilkul, sahi hai, chalega, kar do; no = nahi, na, mat karo; aaj = today; somvaar/mangalvaar/budhvaar/guruvaar/shukravaar/shanivaar/ravivaar = Monday…Sunday; pehli/doosri/teesri wali = the first/second/third one; "service karwana hai" / "book kar do" = they want to book; "kharab", "awaaz aa rahi hai", "dikkat hai" = a fault; "bas", "aur kuch nahi", "shukriya", "dhanyavaad" = they are done.
+- out_of_band "explain" is a question about how THIS booking works, which our system answers itself: why it is a next-day job, can it be back the same day, why not today, why a day or slot is full, when it will be ready, what to do at drop-off, whether they get a confirmation, whether they can change it later, why we need their number or a code, why we ask about faults. Pick the explain_topic.
+- out_of_band "callback" is when they want someone from the centre to call them back, or want to speak to a person, a manager or an advisor. Not when they say they will call back themselves.
+- fault_area: where the fault they described is, from the list. A gear lever, gear knob or shifting problem is "gears". If it fits none, "other".`;
 
 /**
  * The next fortnight, dated and named, so "Thursday" is a lookup rather than
@@ -47,6 +51,8 @@ function calendar(today: IsoDate, days = 14): string {
 }
 
 const SLOT = z.enum(['morning', 'afternoon', 'none']);
+/** A closed list: the model only picks, our code says the sentence (B3). */
+const FAULT_AREA = z.enum(FAULT_AREAS).describe('Where the fault is, when they described one; "other" if none fits.');
 const YESNO = z.enum(['yes', 'no', 'unclear']);
 
 /**
@@ -58,8 +64,15 @@ const YESNO = z.enum(['yes', 'no', 'unclear']);
 function overlayFor(kbKeys: string[]) {
   return {
     out_of_band: z
-      .enum(['none', 'cost', 'general'])
-      .describe('cost = asking what it will cost. general = asking about the centre itself.'),
+      .enum(['none', 'cost', 'general', 'explain', 'callback'])
+      .describe(
+        'cost = asking what it will cost. general = asking about the centre itself. ' +
+          'explain = asking how this booking works (see explain_topic). callback = wants the centre to call them, or a person.',
+      ),
+    explain_topic: z
+      .enum(['none', ...EXPLAIN_TOPICS])
+      .describe('Only when out_of_band is "explain": which question about the booking.'),
+    language: z.enum(['english', 'hinglish']).describe('hinglish if they used any Hindi words or Devanagari.'),
     escalation: z.boolean().describe('True only for a breakdown, accident, or serious grievance.'),
     kb_key: z
       .enum(['none', ...kbKeys] as [string, ...string[]])
@@ -132,12 +145,14 @@ function schemaFor(state: CallState, models: string[], kbKeys: string[]) {
         ...day,
         kind: z.enum(['complaint', 'nothing']),
         text: z.string().describe("A fault with the car they described, in their own words, else \"\"."),
+        fault_area: FAULT_AREA,
       });
     case 'complaint':
       return z.object({
         ...overlay,
         kind: z.enum(['complaint', 'special_request', 'nothing']),
         text: z.string().describe("The fault or request in the caller's own words, else \"\"."),
+        fault_area: FAULT_AREA,
         ...day,
       });
     case 'special_request':
@@ -249,12 +264,26 @@ function describeState(state: CallState): string {
 export function toClassification(req: ClassifyRequest, p: Parsed): Classification {
   const out: Classification = { callerWords: req.utterance.trim() };
 
+  const language = p['language'];
+  if (language === 'english' || language === 'hinglish') out.language = language;
+
   const oob = p['out_of_band'];
+  if (oob === 'callback') {
+    out.outOfBand = 'callback';
+    return out;
+  }
+  const topic = p['explain_topic'];
+  if (oob === 'explain' && typeof topic === 'string' && (EXPLAIN_TOPICS as readonly string[]).includes(topic)) {
+    out.outOfBand = 'explain';
+    out.explain = topic as (typeof EXPLAIN_TOPICS)[number];
+    return out;
+  }
   if (oob === 'cost') {
     out.outOfBand = 'cost';
     return out;
   }
-  if (oob === 'general') {
+  // An "explain" with no topic we know is a question like any other.
+  if (oob === 'general' || oob === 'explain') {
     out.outOfBand = 'general';
     out.generalQuestion = req.utterance.trim();
     const key = p['kb_key'];
@@ -296,7 +325,11 @@ export function toClassification(req: ClassifyRequest, p: Parsed): Classificatio
   const kind = p['kind'];
   const text = typeof p['text'] === 'string' ? p['text'].trim() : '';
   if (kind === 'nothing') out.nothing = true;
-  else if (kind === 'complaint') out.complaint = text || req.utterance.trim();
+  else if (kind === 'complaint') {
+    out.complaint = text || req.utterance.trim();
+    const area = p['fault_area'];
+    out.faultArea = typeof area === 'string' && (FAULT_AREAS as readonly string[]).includes(area) ? (area as (typeof FAULT_AREAS)[number]) : 'other';
+  }
   else if (kind === 'special_request') out.specialRequest = text || req.utterance.trim();
 
   return out;

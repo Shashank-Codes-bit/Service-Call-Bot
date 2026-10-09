@@ -659,7 +659,7 @@ function conversation(
 /** The agent's own opening line, so a sample call reads like a real one. */
 const hello = (mobile: string): ['agent', string] => [
   'agent',
-  fill(GREETING[0], { centre: centreName, last4: spokenDigits(mobile.slice(-4)) }),
+  fill(GREETING[0]!, { centre: centreName, last4: spokenDigits(mobile.slice(-4)) }),
 ];
 
 const SLOT_TIME = { morning: '8:30', afternoon: '2' } as const;
