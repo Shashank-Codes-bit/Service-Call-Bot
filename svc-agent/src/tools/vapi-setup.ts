@@ -73,10 +73,13 @@ export function assistantPayload({
   publicUrl,
   callSecret,
   voice = voiceFor(undefined, undefined),
+  language = 'multi',
 }: {
   publicUrl: string;
   callSecret: string;
   voice?: Voice;
+  /** Deepgram's language: `multi` (Hindi–English mixed, the default) or e.g. `en-IN`. */
+  language?: string;
 }) {
   return {
     name: ASSISTANT_NAME,
@@ -91,8 +94,11 @@ export function assistantPayload({
     transcriber: {
       provider: 'deepgram',
       model: 'nova-3',
-      language: 'en-IN',
+      // `multi` hears Hindi and English mixed mid-sentence, as callers speak
+      // ("kal subah aa jaunga"); en-IN guessed English words for the Hindi.
+      language,
       // The words a booking turns on, so "Nexon" isn't heard as "next one".
+      // Multilingual keyterm prompting works in `multi` too.
       keyterm: KEYTERMS,
     },
     // Hearing, tuned after the first live call (2026-10-04), where the agent's
@@ -157,13 +163,19 @@ async function main() {
   const existing = (Array.isArray(list) ? list : []).find((a) => a.name === ASSISTANT_NAME);
   const current = existing && !chosen ? (await vapi(`/assistant/${existing.id}`))['voice'] : undefined;
   const voice = voiceFor(chosen, current);
-  const payload = assistantPayload({ publicUrl: config.publicUrl, callSecret: config.callApiSecret, voice });
+  const payload = assistantPayload({
+    publicUrl: config.publicUrl,
+    callSecret: config.callApiSecret,
+    voice,
+    language: config.vapiTranscriberLanguage,
+  });
   const saved = existing
     ? await vapi(`/assistant/${existing.id}`, { method: 'PATCH', body: JSON.stringify(payload) })
     : await vapi('/assistant', { method: 'POST', body: JSON.stringify(payload) });
 
   console.log(`${existing ? 'Updated' : 'Created'} the "${ASSISTANT_NAME}" assistant.`);
   console.log(`Voice: ${describeVoice(voice)}${chosen ? ' (from VAPI_VOICE)' : existing ? ' (kept)' : ''}`);
+  console.log(`Transcriber: deepgram nova-3, ${config.vapiTranscriberLanguage}${config.vapiTranscriberLanguage === 'multi' ? ' (Hindi + English)' : ''}`);
   console.log(`Add this to .env, then restart:  VAPI_ASSISTANT_ID=${String(saved['id'])}`);
 }
 

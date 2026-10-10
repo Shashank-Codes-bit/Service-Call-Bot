@@ -174,7 +174,8 @@ describe('vapi:setup', () => {
       callerNumber: '9810011001',
     });
     expect(p.credentials).toEqual([{ provider: 'custom-llm', apiKey: 'cs' }]);
-    expect(p.transcriber).toMatchObject({ language: 'en-IN' });
+    expect(p.transcriber).toMatchObject({ language: 'multi' });
+    expect(assistantPayload({ publicUrl: 'https://x.io', callSecret: 'cs', language: 'en-IN' }).transcriber.language).toBe('en-IN');
     expect(p.firstMessageMode).toBe('assistant-speaks-first-with-model-generated-message');
     expect(p.endCallPhrases).toEqual(['goodbye']);
     expect(p.maxDurationSeconds).toBeLessThanOrEqual(600);

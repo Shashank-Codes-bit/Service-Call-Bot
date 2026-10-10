@@ -566,6 +566,37 @@ moment it had booked. Now:
   - another car ("my wife's car") goes to the team (`otherVehicle`);
   - an unclear answer gets asked once more before goodbye.
 
+**Hinglish, fault areas, explanations, call-backs (2026-10-09):**
+- **Hinglish both ways.**
+  - **Hearing:** the transcriber is Deepgram nova-3 `multi`. It's a setting,
+    `VAPI_TRANSCRIBER_LANGUAGE` (default `multi`; `en-IN` = English only).
+  - **Understanding:** both readers know common Hinglish, in Latin and
+    Devanagari: haan ji / nahi / theek hai, kal / parson / subah / shaam,
+    pehli / doosri wali, "service karwana hai", bas / shukriya
+    (`classifier.ts` `detectHinglish`, Haiku `language`).
+  - **Replying:**
+    - `templates.ts` holds two pool sets of one shape, `EN` and `HI`
+      (Hinglish, Latin script, neutral "hum" forms). `HI: Pools`, so a
+      missing line doesn't compile.
+    - The machine picks `ctx.L = poolsFor(session.language)`. It turns
+      Hinglish on the first Hindi turn, and back after two plain-English
+      turns of 3+ words.
+    - The greeting, Knowledge answers and SMS stay English.
+- **Fault areas.** The model picks `fault_area` from a closed list
+  (`FAULT_AREAS`), and our code says "Got it, a problem with the gears, noted
+  for the workshop." (B3 holds). Then, before the day question: "It needs a
+  proper check, so it'll be ready the next day." The job card note starts
+  `[gears]`.
+- **Explaining itself.** `out_of_band: explain` with 11 topics
+  (`EXPLAIN_TOPICS`), answered from the call's state by `machine.ts`
+  `explain()`, e.g. "why next day" → "It's a major service, but the gear
+  problem needs a proper check…".
+- **Call-backs.** `out_of_band: callback` → "Yes, I'll ask the service centre
+  to call you back…". It files one customer-care follow-up per call, plus
+  the SMS.
+- **A slot said with the day** ("kal subah", "Friday morning") goes straight
+  to the readback (`considerDay(…, wanted)`).
+
 **Test cases: `svc-agent/docs/test-cases.md`.** This is the running log of
 every issue found in real calls (with the caller's exact words, cause, fix
 and guarding test), the hard cases still to try, and the invariants any

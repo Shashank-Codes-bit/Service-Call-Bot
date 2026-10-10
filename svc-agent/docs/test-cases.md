@@ -10,8 +10,13 @@ tested automatically is decided later; Part D only lists the ideas.
 - **Part C**: what every test must check, whatever it says.
 - **Part D**: ideas for automating it.
 
-To read a call back on the VM:
-`docker compose exec app npm run calls -- voltas 3`
+**All testing is on the `shashank` account (Jindal Motors)** since 2026-10-05:
+`https://140-238-251-141.sslip.io/try/shashank`, with "+ New demo caller" for a
+fresh customer each call. The Vapi dashboard's Talk button doesn't carry a
+centre or a caller, so it's only good for hearing voices.
+
+To read calls back on the VM:
+`docker compose exec app npm run calls -- shashank 3`
 
 Status: **fixed** (PR), **mitigated**, **open**, or **product gap** (a
 decision, not a bug).
@@ -21,6 +26,70 @@ decision, not a bug).
 ## Part A: Issues found in real calls
 
 Newest first.
+
+### A22 · "Can someone call me back?" didn't get a plain yes
+- **When:** 2026-10-05, the user's test call.
+- **What the user expected:** "Yes, I'll ask the service centre to call you
+  back. Just in case, I'm texting you their number too."
+- **Cause:** nothing recognised a call-back request. It was read as a
+  question about the centre, so the agent answered "I don't have that to
+  hand…".
+- **Status:** fixed (this PR).
+  - New `callback` overlay: one customer-care follow-up per call, the number
+    by SMS.
+  - Mid-booking it carries on; otherwise it moves to "Anything else?".
+  - "I'll call back later" is not a request.
+- **Guard:** `machine.test.ts` › '"can someone call me back?" gets a plain yes'.
+
+### A21 · "Why is this next day, not same day?" wasn't explained
+- **When:** 2026-10-09 (user feedback).
+- **Caller asked:** "When I asked why this is a next day service, why not
+  single day — explain: minor, but complaint."
+- **Status:** fixed (this PR). It's handled by a new `explain` overlay with
+  11 topics, each answered by our code from the call's own state:
+  - next day, same day, not today;
+  - day full, one slot;
+  - when ready, drop-off;
+  - confirmation, change later;
+  - why number, why fault.
+
+  Example: "It's a major service, but the gear problem needs a proper check.
+  That takes until the next day."
+- **Guard:** `machine.test.ts` › 'explaining itself'.
+
+### A20 · A long fault description got a generic "noted"
+- **When:** 2026-10-09 (user feedback).
+- **Caller said:** "Basically, I am facing a problem with a gear knob.
+  Whenever I shift the gear, I can see the the light pulling of the gear
+  changing wires. You can see the tuning fork or the pointing fork of the
+  gear."
+- **Wanted:** the agent should show it understood, note it, and say what it
+  means (next day).
+- **Status:** fixed (this PR).
+  - The model picks the **area** from a closed list; our code says the
+    sentence: "Got it, a problem with the gears, noted for the workshop. It
+    needs a proper check, so it'll be ready the next day."
+  - The job card gets `[gears]` + the caller's words.
+  - Also fixed: "*Whenever* I shift…" had been read as "any day is fine".
+- **Guard:** "a long fault description is understood…".
+
+### A19 · Hinglish not heard, not answered in kind
+- **When:** 2026-10-05 (user feedback).
+- **What happened:**
+  - **Hearing:** the transcriber was English only (`en-IN`), so Hindi words
+    were misheard.
+  - **Understanding:** the fallback reader knew only "kal" and "parson".
+  - **Replies:** English only.
+- **Status:** fixed (this PR).
+  - **Hearing:** Deepgram `multi` (Hindi–English mixed).
+  - **Understanding:** Hinglish vocabulary in both readers.
+  - **Replies:** a full Hinglish set of lines (`templates.ts` HI). The agent
+    switches when the caller uses Hindi, and back after two English turns.
+  - **Also fixed:** "kal subah" / "Friday morning" — a slot said with the
+    day — now goes straight to the readback.
+- **Guard:** "Hinglish: understood, and answered in kind".
+- **Still to confirm:** whether the chosen voice says Latin-script Hinglish
+  well (A18).
 
 ### A18 · Voice still sounds robotic
 - **When:** 2026-10-04, every call so far.
@@ -266,9 +335,31 @@ One line each: **what to say**, then **what must hold**.
 - [ ] "The 31st" in a 30-day month.
 
 ### Hinglish / Indian English
+- [ ] A whole call in Hinglish → Hinglish replies throughout, booked.
+- [ ] Start in English, switch to Hinglish mid-call, and back → the replies
+  follow.
 - [ ] "kal subah" (tomorrow morning), "parson" (day after), "shaam ko".
-- [ ] "ji haan", "haan ji", "theek hai", "nahi" as yes / no.
+- [ ] "ji haan", "haan ji", "theek hai", "nahi", "bas, shukriya" as yes / no /
+  done.
 - [ ] Mixed: "Creta ka service karwana hai, Friday ko".
+- [ ] Hindi weekday names: "shukravaar", "somvaar".
+- [ ] "doosri wali" / "pehli" to pick a car.
+- [ ] Pure Hindi in Devanagari, as the transcriber may return it.
+
+### Faults said at length (A20)
+- [ ] A 30-second monologue about one fault → the right area is named back,
+  once.
+- [ ] Two faults in one breath (gears and AC) → both on the job card.
+- [ ] A fault that fits no area → the generic "noted".
+- [ ] A fault mentioned only later, at the readback.
+
+### Why-questions (A21), in every state
+- [ ] "Why next day?" — before a day, at the slot question, at the readback,
+  and after booking.
+- [ ] "Why is Thursday full?", "Why only afternoon?", "Why not today?".
+- [ ] "When do I get it back?", "What do I do when I come?", "Will I get a
+  message?".
+- [ ] The same in Hinglish: "agle din kyun?", "kab milegi?".
 
 ### Pressure and misuse
 - [ ] A rude or abusive caller → stays polite; hands to a human after a
