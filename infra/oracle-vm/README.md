@@ -1,5 +1,7 @@
 # The shared Oracle Cloud VM: many sites, one machine
 
+> **Deploying a new app here?** Start with [`DEPLOYMENT-GUIDE.md`](DEPLOYMENT-GUIDE.md). It's the complete, self-contained guide (how the VM was built, the step-by-step recipe for an app with a server, the rules for a shared machine, and a pre-launch checklist), written to be pasted whole into another project's chat.
+
 One Always Free VM hosts several websites. One **Caddy**, installed on the machine itself, owns ports 80 and 443. It gets and renews a free HTTPS certificate for every site, and sends each visitor to the right app by the hostname they typed. **Each site is one small file**, added with `add-site.sh`.
 
 This file is also meant to be pasted, whole, into another project's chat as the context for deploying that project here.
@@ -35,7 +37,8 @@ Pick the next free port for a new app and add a row here in the same PR.
 |---|---|---|---|
 | 8000 | `alerts.` (Voltas alert dashboard) | systemd `voltas-alerts`, Python | `Shashank-Codes-bit/Email_Alert-Dashboard` |
 | 8080 | root (service bot) | Docker `svc-agent` | `Shashank-Codes-bit/Service-Call-Bot` |
-| 8100 | *next free* | | |
+| 8100 | *next free: reserved for the next app being deployed (record its name here)* | | |
+| 8101 | *free after that* | | |
 
 ## Setting up the VM (done once; safe to re-run)
 ```bash
