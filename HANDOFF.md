@@ -875,6 +875,8 @@ question.
    on the VM: `seeded fresh`, `Haiku (live)`, `clock Asia/Kolkata`, no
    warnings. SSH only works with the user's **Voltas VPN disconnected**.
 
+   **Deployment guide for any app on this VM:** `infra/oracle-vm/DEPLOYMENT-GUIDE.md`, self-contained, for pasting into another project's chat.
+
    **The VM hosts several sites (2026-10-01).** The VM-level setup lives in
    `infra/oracle-vm/`, and its README is the guide and port register:
    - `setup.sh`: firewall, Docker, and Caddy on the machine itself, with an
