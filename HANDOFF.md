@@ -568,8 +568,7 @@ moment it had booked. Now:
 
 **Hinglish, fault areas, explanations, call-backs (2026-10-09):**
 - **Hinglish both ways.**
-  - **Hearing:** the transcriber is Deepgram nova-3 `multi`. It's a setting,
-    `VAPI_TRANSCRIBER_LANGUAGE` (default `multi`; `en-IN` = English only).
+  - **Hearing:** a preset, `VAPI_TRANSCRIBER` (see "Hearing presets" below).
   - **Understanding:** both readers know common Hinglish, in Latin and
     Devanagari: haan ji / nahi / theek hai, kal / parson / subah / shaam,
     pehli / doosri wali, "service karwana hai", bas / shukriya
@@ -596,6 +595,31 @@ moment it had booked. Now:
   the SMS.
 - **A slot said with the day** ("kal subah", "Friday morning") goes straight
   to the readback (`considerDay(…, wanted)`).
+
+**Hearing presets (2026-10-10, test-cases A23/A24):**
+- **Why:** after PR #16 went live, the agent couldn't tell when a caller had
+  finished, and transcription got worse. The end-of-turn setting was still
+  LiveKit, which is English only. Under the `multi` transcriber, Vapi fell
+  back to a heuristic.
+- **How it works now:** how the assistant hears is one preset,
+  `VAPI_TRANSCRIBER` (`vapi-setup.ts` `TRANSCRIBERS`). Each preset pairs a
+  transcriber with the end-of-turn detection that suits its language.
+
+  | Preset | Transcriber | End of turn |
+  |---|---|---|
+  | `flux-multi` (default) | Deepgram `flux-general-multi`, hints `en`, `hi`; no keyterms yet | Flux's own (no `smartEndpointingPlan`) |
+  | `nova-multi` | Deepgram nova-3 `multi`, keyterms | Vapi's |
+  | `nova-en` | Deepgram nova-3 `en-IN`, keyterms (English only) | LiveKit |
+
+- **Switching:** set `VAPI_TRANSCRIBER=…` in the VM's `.env`, then run
+  `docker compose exec app npm run vapi:setup`. No rebuild is needed.
+- **What setup prints:** the preset. It also reads back what Vapi saved, and
+  warns if the old LiveKit plan survived.
+- **If Vapi rejects Flux:** setup says so, and suggests `nova-multi`.
+- **Dashboard edits:** a dashboard publish can put its own transcriber back,
+  so re-run `vapi:setup` after one.
+- **Test:** `public.test.ts` checks that no preset pairs LiveKit with a
+  non-English transcriber.
 
 **Test cases: `svc-agent/docs/test-cases.md`.** This is the running log of
 every issue found in real calls (with the caller's exact words, cause, fix

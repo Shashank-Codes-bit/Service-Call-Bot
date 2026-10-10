@@ -59,6 +59,86 @@ export function voiceFor(chosen: Voice | undefined, current: unknown): Voice {
 export const describeVoice = (v: Voice) => `${v.provider} ${v.voiceId}${v.model ? ` (${v.model})` : ''}, whole sentences`;
 
 /**
+ * How the assistant hears, picked as one preset (VAPI_TRANSCRIBER): the
+ * transcriber, and the end-of-turn detection that suits its language, travel
+ * together. LiveKit's end-of-turn model is English only. Left on after the
+ * switch to `multi`, Vapi fell back to a heuristic, and the agent couldn't
+ * tell when a caller had finished (docs/test-cases.md A23).
+ */
+export type Hearing = {
+  transcriber: {
+    provider: 'deepgram';
+    model: string;
+    language?: string;
+    /** Language hints, for Flux Multilingual only. */
+    languages?: string[];
+    keyterm?: string[];
+  };
+  /** Vapi's smartEndpointingPlan; none when the transcriber detects the end of a turn itself. */
+  endOfTurn?: { provider: 'vapi' | 'livekit' };
+  describe: string;
+};
+
+export const TRANSCRIBERS = {
+  // Deepgram's conversational model: Hindi and English mid-sentence, and its
+  // own end-of-turn detection, so Vapi's is left off. No keyterms until
+  // they're confirmed for this model: an unknown field could fail a call.
+  'flux-multi': {
+    transcriber: { provider: 'deepgram', model: 'flux-general-multi', languages: ['en', 'hi'] },
+    describe: "deepgram flux-general-multi (Hindi + English), Flux's own end-of-turn",
+  },
+  // The model PR #16 went live with, with an end-of-turn that isn't English-only.
+  'nova-multi': {
+    transcriber: { provider: 'deepgram', model: 'nova-3', language: 'multi', keyterm: KEYTERMS },
+    endOfTurn: { provider: 'vapi' },
+    describe: "deepgram nova-3 multi (Hindi + English), Vapi's end-of-turn",
+  },
+  // The setup before Hinglish: heard Indian English well, guessed English words for Hindi.
+  'nova-en': {
+    transcriber: { provider: 'deepgram', model: 'nova-3', language: 'en-IN', keyterm: KEYTERMS },
+    endOfTurn: { provider: 'livekit' },
+    describe: "deepgram nova-3 en-IN (English only), LiveKit's end-of-turn",
+  },
+} satisfies Record<string, Hearing>;
+
+export type TranscriberName = keyof typeof TRANSCRIBERS;
+export const DEFAULT_TRANSCRIBER: TranscriberName = 'flux-multi';
+
+/** "nova-multi" → its preset. Anything else is a mistake worth stopping for. */
+export function transcriberFor(name: string): Hearing {
+  const key = name.trim() || DEFAULT_TRANSCRIBER;
+  if (!Object.hasOwn(TRANSCRIBERS, key)) {
+    throw new Error(`VAPI_TRANSCRIBER must be one of: ${Object.keys(TRANSCRIBERS).join(', ')}.`);
+  }
+  return TRANSCRIBERS[key as TranscriberName];
+}
+
+/**
+ * What Vapi saved that isn't what we sent, for hearing. A PATCH that merged
+ * rather than replaced could keep the old LiveKit end-of-turn under a
+ * Hindi-English transcriber (the very mix that broke listening), or the old
+ * `language` and keyterms under Flux.
+ */
+export function hearingMismatches(saved: Record<string, unknown>, hearing: Hearing): string[] {
+  const out: string[] = [];
+  const t = (saved['transcriber'] ?? {}) as Record<string, unknown>;
+  const shown = (v: unknown) => (v === undefined ? 'unset' : Array.isArray(v) && v.length > 3 ? `${v.length} words` : JSON.stringify(v));
+  for (const k of ['model', 'language', 'languages', 'keyterm'] as const) {
+    if (JSON.stringify(t[k]) !== JSON.stringify(hearing.transcriber[k])) {
+      out.push(`transcriber ${k} is ${shown(t[k])}, not ${shown(hearing.transcriber[k])}`);
+    }
+  }
+  const plan = ((saved['startSpeakingPlan'] ?? {}) as Record<string, unknown>)['smartEndpointingPlan'] as
+    | { provider?: string }
+    | undefined;
+  const want = hearing.endOfTurn?.provider;
+  if ((plan?.provider ?? undefined) !== want) {
+    out.push(`smart endpointing is ${plan?.provider ?? 'off'}, not ${want ?? 'off'}`);
+  }
+  return out;
+}
+
+/**
  * The assistant. Vapi carries the audio; every word the caller hears comes
  * from our state machine through the custom-LLM adapter (`/vapi`).
  *
@@ -66,21 +146,21 @@ export const describeVoice = (v: Voice) => `${v.provider} ${v.voiceId}${v.model 
  *   variables, which Vapi fills in from the page's `variableValues` and our
  *   adapter reads back (vapi.ts `callIdentity`).
  * - The assistant speaks first, so our greeting opens the call.
- * - en-IN on both sides: Deepgram transcribes Indian English, and an Indian
- *   English neural voice answers.
+ * - Hearing is a preset (`TRANSCRIBERS`): Hindi and English mixed by default.
  */
 export function assistantPayload({
   publicUrl,
   callSecret,
   voice = voiceFor(undefined, undefined),
-  language = 'multi',
+  transcriber = DEFAULT_TRANSCRIBER,
 }: {
   publicUrl: string;
   callSecret: string;
   voice?: Voice;
-  /** Deepgram's language: `multi` (Hindi–English mixed, the default) or e.g. `en-IN`. */
-  language?: string;
+  /** A `TRANSCRIBERS` preset name. */
+  transcriber?: string;
 }) {
+  const hearing = transcriberFor(transcriber);
   return {
     name: ASSISTANT_NAME,
     firstMessageMode: 'assistant-speaks-first-with-model-generated-message',
@@ -91,24 +171,18 @@ export function assistantPayload({
       messages: [{ role: 'system', content: 'svc-agent org={{org}} caller={{callerNumber}}' }],
     },
     credentials: [{ provider: 'custom-llm', apiKey: callSecret }],
-    transcriber: {
-      provider: 'deepgram',
-      model: 'nova-3',
-      // `multi` hears Hindi and English mixed mid-sentence, as callers speak
-      // ("kal subah aa jaunga"); en-IN guessed English words for the Hindi.
-      language,
-      // The words a booking turns on, so "Nexon" isn't heard as "next one".
-      // Multilingual keyterm prompting works in `multi` too.
-      keyterm: KEYTERMS,
-    },
+    // Callers mix Hindi and English mid-sentence ("kal subah aa jaunga");
+    // keyterms, where a preset has them, keep "Nexon" from being "next one".
+    transcriber: hearing.transcriber,
     // Hearing, tuned after the first live call (2026-10-04), where the agent's
     // own voice and a long greeting garbled a plain "yes":
     // - two words to interrupt the agent, so an echo, a cough or "um" doesn't;
     stopSpeakingPlan: { numWords: 2, voiceSeconds: 0.3, backoffSeconds: 1 },
     // - a moment's patience before answering, so a caller isn't cut off
     //   mid-thought ("So, basically, I…"): 0.6 s and 0.8 s both answered
-    //   half a sentence on the live calls ("Do the same day pickup as");
-    startSpeakingPlan: { waitSeconds: 1.0, smartEndpointingPlan: { provider: 'livekit' } },
+    //   half a sentence on the live calls ("Do the same day pickup as"),
+    //   and an end-of-turn detector that understands the caller's language;
+    startSpeakingPlan: { waitSeconds: 1.0, smartEndpointingPlan: hearing.endOfTurn },
     // - background noise removed before transcription.
     backgroundSpeechDenoisingPlan: { smartDenoisingPlan: { enabled: true } },
     voice,
@@ -152,8 +226,10 @@ async function main() {
   }
 
   let chosen: Voice | undefined;
+  let hearing: Hearing;
   try {
     chosen = config.vapiVoice ? parseVoice(config.vapiVoice, config.vapiVoiceModel) : undefined;
+    hearing = transcriberFor(config.vapiTranscriber);
   } catch (e) {
     console.error((e as Error).message);
     process.exit(1);
@@ -167,15 +243,27 @@ async function main() {
     publicUrl: config.publicUrl,
     callSecret: config.callApiSecret,
     voice,
-    language: config.vapiTranscriberLanguage,
+    transcriber: config.vapiTranscriber,
   });
-  const saved = existing
-    ? await vapi(`/assistant/${existing.id}`, { method: 'PATCH', body: JSON.stringify(payload) })
-    : await vapi('/assistant', { method: 'POST', body: JSON.stringify(payload) });
+  let saved: Record<string, unknown>;
+  try {
+    saved = existing
+      ? await vapi(`/assistant/${existing.id}`, { method: 'PATCH', body: JSON.stringify(payload) })
+      : await vapi('/assistant', { method: 'POST', body: JSON.stringify(payload) });
+  } catch (e) {
+    console.error((e as Error).message);
+    if (hearing === TRANSCRIBERS['flux-multi']) {
+      console.error('If Vapi doesn\'t take Flux Multilingual yet: set VAPI_TRANSCRIBER=nova-multi in .env and run this again.');
+    }
+    process.exit(1);
+  }
 
   console.log(`${existing ? 'Updated' : 'Created'} the "${ASSISTANT_NAME}" assistant.`);
   console.log(`Voice: ${describeVoice(voice)}${chosen ? ' (from VAPI_VOICE)' : existing ? ' (kept)' : ''}`);
-  console.log(`Transcriber: deepgram nova-3, ${config.vapiTranscriberLanguage}${config.vapiTranscriberLanguage === 'multi' ? ' (Hindi + English)' : ''}`);
+  console.log(`Transcriber: ${hearing.describe}`);
+  for (const m of hearingMismatches(saved, hearing)) {
+    console.warn(`Warning: Vapi saved something else: ${m}. Check the assistant in Vapi's dashboard.`);
+  }
   console.log(`Add this to .env, then restart:  VAPI_ASSISTANT_ID=${String(saved['id'])}`);
 }
 
