@@ -27,6 +27,44 @@ decision, not a bug).
 
 Newest first.
 
+### A24 · Transcription worse since Hinglish went live
+- **When:** 2026-10-10, the first calls after PR #16 was deployed.
+- **What the user saw:** "the transcriptions are not as good."
+- **Cause (likely):** Deepgram nova-3 `multi` is a general code-switching
+  model. It's weaker than `en-IN` on Indian English. Developers also report it
+  hearing Hindi in Hinglish as another language (Spanish).
+- **Status:** mitigated (PR #18), to be confirmed on calls. Hearing is now a
+  preset, `VAPI_TRANSCRIBER`:
+  - `flux-multi` (default): Deepgram Flux Multilingual, `en` + `hi` hints;
+  - `nova-multi`: nova-3 `multi` (the PR #16 setup), keyterms;
+  - `nova-en`: nova-3 `en-IN`, English only, keyterms (the setup before
+    Hinglish).
+
+  Flux Multilingual carries no keyterms yet, since Deepgram doesn't say it
+  takes them. So check car names on it ("Nexon", "Creta").
+- **To do:** the same three calls on each preset (Part B › "Hearing presets,
+  side by side"). Record the winner here.
+
+### A23 · Agent unsure when the caller had finished
+- **When:** 2026-10-10, the same calls.
+- **What the user saw:** "the listening part is playing — not sure when to
+  stop listening."
+- **Cause:** `startSpeakingPlan.smartEndpointingPlan` was still `livekit`.
+  Vapi's docs say LiveKit's end-of-turn model is English only. Paired with
+  the `multi` transcriber, Vapi falls back to a heuristic ("Endpointing
+  falling back to heuristic"). Before PR #16, the transcriber was `en-IN`,
+  and LiveKit worked.
+- **Status:** fixed (PR #18), to be confirmed on calls. Each preset carries the
+  end-of-turn that suits its language:
+  - Flux uses its own end-of-turn detection;
+  - nova `multi` uses Vapi's;
+  - only English-only `en-IN` keeps LiveKit.
+
+  `vapi:setup` also reads back what Vapi saved, and warns if the old LiveKit
+  plan survived.
+- **Guard:** `public.test.ts` › "LiveKit end-of-turn only with an English-only
+  transcriber" (every preset).
+
 ### A22 · "Can someone call me back?" didn't get a plain yes
 - **When:** 2026-10-05, the user's test call.
 - **What the user expected:** "Yes, I'll ask the service centre to call you
@@ -34,7 +72,7 @@ Newest first.
 - **Cause:** nothing recognised a call-back request. It was read as a
   question about the centre, so the agent answered "I don't have that to
   hand…".
-- **Status:** fixed (this PR).
+- **Status:** fixed (PR #16).
   - New `callback` overlay: one customer-care follow-up per call, the number
     by SMS.
   - Mid-booking it carries on; otherwise it moves to "Anything else?".
@@ -45,7 +83,7 @@ Newest first.
 - **When:** 2026-10-09 (user feedback).
 - **Caller asked:** "When I asked why this is a next day service, why not
   single day — explain: minor, but complaint."
-- **Status:** fixed (this PR). It's handled by a new `explain` overlay with
+- **Status:** fixed (PR #16). It's handled by a new `explain` overlay with
   11 topics, each answered by our code from the call's own state:
   - next day, same day, not today;
   - day full, one slot;
@@ -65,7 +103,7 @@ Newest first.
   gear."
 - **Wanted:** the agent should show it understood, note it, and say what it
   means (next day).
-- **Status:** fixed (this PR).
+- **Status:** fixed (PR #16).
   - The model picks the **area** from a closed list; our code says the
     sentence: "Got it, a problem with the gears, noted for the workshop. It
     needs a proper check, so it'll be ready the next day."
@@ -80,7 +118,7 @@ Newest first.
     were misheard.
   - **Understanding:** the fallback reader knew only "kal" and "parson".
   - **Replies:** English only.
-- **Status:** fixed (this PR).
+- **Status:** fixed (PR #16).
   - **Hearing:** Deepgram `multi` (Hindi–English mixed).
   - **Understanding:** Hinglish vocabulary in both readers.
   - **Replies:** a full Hinglish set of lines (`templates.ts` HI). The agent
@@ -283,6 +321,25 @@ One line each: **what to say**, then **what must hold**.
   seven" → slot and plate understood.
 - [ ] A number said with pauses: "98100… 11001" on the other-phone path.
 
+### Hearing presets, side by side (A23, A24)
+Same three calls on each `VAPI_TRANSCRIBER` preset. Switch by setting it in
+`.env`, then run `vapi:setup` again.
+
+The three calls:
+1. Hinglish throughout.
+2. A long fault, with pauses mid-sentence.
+3. English, with car names and days.
+
+For each, note:
+- [ ] A long sentence with a pause in it arrives as **one** turn (not cut, not
+  answered half-way).
+- [ ] After the caller stops, the agent answers within about 2 s, with no long
+  dead air.
+- [ ] Hindi words come through as Hindi, in Latin or Devanagari, not as
+  English look-alikes or Spanish.
+- [ ] Car names and days are right ("Nexon", "Creta", "Friday").
+- [ ] A one-word "haan" / "yes" / "nahi" is heard at all.
+
 ### Everything at once
 - [ ] "It's the Creta, the AC's weak, Friday morning, and do you do pickup?"
   → car, fault, day and slot taken; the question answered; nothing asked
@@ -410,6 +467,8 @@ Whatever the scenario says, these must hold on every turn:
    - no prices invented (D9).
 8. **The caller is never hung up on mid-thought:** goodbye comes only after
    "Anything else?" (or the cap).
+9. **Hearing matches the language:** the end-of-turn detector understands the
+   language the transcriber is set to. LiveKit is for English only (A23).
 
 ---
 

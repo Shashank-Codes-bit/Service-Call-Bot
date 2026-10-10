@@ -70,11 +70,11 @@ export const config = {
   vapiVoice: str('VAPI_VOICE'),
   vapiVoiceModel: str('VAPI_VOICE_MODEL'),
   /**
-   * Only for `npm run vapi:setup`: the transcriber's language. `multi` hears
-   * Hindi and English mixed in one sentence (Deepgram nova-3 code-switching);
-   * `en-IN` is English only.
+   * Only for `npm run vapi:setup`: how the assistant hears, as a preset
+   * (vapi-setup.ts `TRANSCRIBERS`). `flux-multi` (default) and `nova-multi`
+   * hear Hindi and English mixed; `nova-en` is English only.
    */
-  vapiTranscriberLanguage: str('VAPI_TRANSCRIBER_LANGUAGE', 'multi'),
+  vapiTranscriber: str('VAPI_TRANSCRIBER', 'flux-multi'),
   /** This site's own address, e.g. https://140-238-251-141.sslip.io — Vapi calls back to it. */
   publicUrl: str('PUBLIC_URL').replace(/\/+$/, ''),
 

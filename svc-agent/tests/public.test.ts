@@ -10,7 +10,7 @@ import { buildApp } from '../src/dealer/app.ts';
 import { StubClassifier } from '../src/call/classifier.ts';
 import { LocalCrm } from '../src/call/crm.ts';
 import { callIdentity, DAILY_CAP_LINE, GOODBYE } from '../src/call/vapi.ts';
-import { assistantPayload } from '../src/tools/vapi-setup.ts';
+import { assistantPayload, hearingMismatches, TRANSCRIBERS, transcriberFor } from '../src/tools/vapi-setup.ts';
 import { printCalls } from '../src/tools/calls.ts';
 import { config } from '../src/config.ts';
 
@@ -165,7 +165,7 @@ describe('the Vapi web call', () => {
 });
 
 describe('vapi:setup', () => {
-  it('points the assistant at this site, carries the variables, and speaks Indian English', () => {
+  it('points the assistant at this site and carries the variables', () => {
     const p = assistantPayload({ publicUrl: 'https://example.sslip.io/', callSecret: 'cs' });
     expect(p.model).toMatchObject({ provider: 'custom-llm', url: 'https://example.sslip.io/vapi' });
     expect(p.model.messages[0]!.content).toBe('svc-agent org={{org}} caller={{callerNumber}}');
@@ -174,16 +174,86 @@ describe('vapi:setup', () => {
       callerNumber: '9810011001',
     });
     expect(p.credentials).toEqual([{ provider: 'custom-llm', apiKey: 'cs' }]);
-    expect(p.transcriber).toMatchObject({ language: 'multi' });
-    expect(assistantPayload({ publicUrl: 'https://x.io', callSecret: 'cs', language: 'en-IN' }).transcriber.language).toBe('en-IN');
     expect(p.firstMessageMode).toBe('assistant-speaks-first-with-model-generated-message');
     expect(p.endCallPhrases).toEqual(['goodbye']);
     expect(p.maxDurationSeconds).toBeLessThanOrEqual(600);
     // Tuned after the first live call: hard to interrupt by accident, patient before replying, car names known.
     expect(p.stopSpeakingPlan.numWords).toBeGreaterThanOrEqual(2);
     expect(p.startSpeakingPlan.waitSeconds).toBeGreaterThanOrEqual(0.5);
-    expect(p.transcriber.keyterm).toEqual(expect.arrayContaining(['Nexon', 'Friday', 'morning']));
     expect(p.backgroundSpeechDenoisingPlan.smartDenoisingPlan.enabled).toBe(true);
+  });
+
+  const payload = (transcriber?: string) => assistantPayload({ publicUrl: 'https://x.io', callSecret: 'cs', transcriber });
+
+  it('hears Hindi and English mixed by default, with Flux deciding when the caller has finished', () => {
+    const p = payload();
+    expect(p.transcriber).toEqual({ provider: 'deepgram', model: 'flux-general-multi', languages: ['en', 'hi'] });
+    // No smart endpointing of Vapi's: Flux has its own. Gone from the JSON, not sent as null.
+    expect(JSON.parse(JSON.stringify(p)).startSpeakingPlan).toEqual({ waitSeconds: 1.0 });
+  });
+
+  it('nova-multi: the same mix on nova-3, with Vapi end-of-turn and the booking words', () => {
+    const p = payload('nova-multi');
+    expect(p.transcriber).toMatchObject({ model: 'nova-3', language: 'multi' });
+    expect(p.transcriber.keyterm).toEqual(expect.arrayContaining(['Nexon', 'Friday', 'morning']));
+    expect(p.startSpeakingPlan.smartEndpointingPlan).toEqual({ provider: 'vapi' });
+  });
+
+  it('nova-en: English only, as before Hinglish, with LiveKit end-of-turn', () => {
+    const p = payload('nova-en');
+    expect(p.transcriber).toMatchObject({ model: 'nova-3', language: 'en-IN' });
+    expect(p.transcriber.keyterm).toEqual(expect.arrayContaining(['Nexon']));
+    expect(p.startSpeakingPlan.smartEndpointingPlan).toEqual({ provider: 'livekit' });
+  });
+
+  it('a mistyped preset stops setup, naming the real ones', () => {
+    expect(() => payload('flux')).toThrow(/flux-multi, nova-multi, nova-en/);
+    expect(() => transcriberFor('toString')).toThrow(/VAPI_TRANSCRIBER/);
+    expect(transcriberFor('')).toBe(TRANSCRIBERS['flux-multi']);
+    expect(transcriberFor(' nova-en ')).toBe(TRANSCRIBERS['nova-en']);
+  });
+
+  // LiveKit's end-of-turn model is English only. Paired with a Hindi-English
+  // transcriber, Vapi fell back to a heuristic, and the agent couldn't tell
+  // when a caller had finished (test-cases A23).
+  for (const [name, hearing] of Object.entries(TRANSCRIBERS)) {
+    it(`${name}: LiveKit end-of-turn only with an English-only transcriber`, () => {
+      const t: { language?: string; languages?: string[] } = hearing.transcriber;
+      const english = (t.language ?? '').startsWith('en') && !t.languages;
+      if (!english) expect(payload(name).startSpeakingPlan.smartEndpointingPlan?.provider).not.toBe('livekit');
+      // The rest of the hearing tuning holds whatever the preset.
+      const p = payload(name);
+      expect(p.startSpeakingPlan.waitSeconds).toBe(1.0);
+      expect(p.stopSpeakingPlan.numWords).toBeGreaterThanOrEqual(2);
+    });
+  }
+
+  it('says when Vapi saved other hearing than was sent', () => {
+    const flux = TRANSCRIBERS['flux-multi'];
+    // What we sent, as Vapi echoes it back.
+    for (const name of Object.keys(TRANSCRIBERS)) {
+      const sent = JSON.parse(JSON.stringify(payload(name)));
+      expect(hearingMismatches({ ...sent, id: 'a1' }, transcriberFor(name)), name).toEqual([]);
+    }
+    const fluxSent = { provider: 'deepgram', model: 'flux-general-multi', languages: ['en', 'hi'] };
+    // A merging PATCH that kept the old LiveKit plan, language and keyterms under Flux.
+    expect(
+      hearingMismatches(
+        {
+          transcriber: { ...fluxSent, language: 'multi', keyterm: ['Nexon', 'Swift', 'Creta', 'Fortuner'] },
+          startSpeakingPlan: { waitSeconds: 1, smartEndpointingPlan: { provider: 'livekit' } },
+        },
+        flux,
+      ),
+    ).toEqual([
+      'transcriber language is "multi", not unset',
+      'transcriber keyterm is 4 words, not unset',
+      'smart endpointing is livekit, not off',
+    ]);
+    expect(hearingMismatches({ transcriber: { ...TRANSCRIBERS['nova-multi'].transcriber } }, TRANSCRIBERS['nova-multi'])).toEqual([
+      'smart endpointing is off, not vapi',
+    ]);
+    expect(hearingMismatches({}, flux)[0]).toBe('transcriber model is unset, not "flux-general-multi"');
   });
 });
 
